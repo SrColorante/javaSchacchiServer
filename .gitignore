@@ -1,0 +1,21 @@
+# Build Maven
+target/
+
+# Dati locali degli account: contiene hash delle password, non va versionato
+accounts.txt
+accounts.txt.tmp
+
+# Eccezioni e log
+*.log
+hs_err_pid*
+*.hprof
+
+# IDE
+.idea/
+*.iml
+.vscode/launch.json
+.vscode/tasks.json
+.classpath
+.project
+.settings/
+bin/

@@ -113,8 +113,25 @@ public class ClientNetwork {
                 for (ClientListener l : listeners) l.onLoginSuccess(currentUsername, elo, wins, losses, draws);
             }
             case "REGISTER_OK" -> {
-                this.currentUsername = arg;
-                for (ClientListener l : listeners) l.onRegisterSuccess(arg);
+                // Il messaggio può contenere un avviso sull'art. 8 GDPR dopo il nome
+                String[] regParts = arg.split("\\s+");
+                this.currentUsername = regParts[0];
+                for (ClientListener l : listeners) l.onRegisterSuccess(regParts[0]);
+            }
+            case "LOGOUT_OK" -> {
+                for (ClientListener l : listeners) l.onLogoutSuccess();
+            }
+            case "EXPORT_LINE" -> {
+                for (ClientListener l : listeners) l.onDataExported(arg);
+            }
+            case "EXPORT_END" -> {
+                for (ClientListener l : listeners) l.onDataExportComplete(arg);
+            }
+            case "EXPORT_EMPTY" -> {
+                for (ClientListener l : listeners) l.onDataExportEmpty(arg);
+            }
+            case "DELETE_OK" -> {
+                for (ClientListener l : listeners) l.onAccountDeleted(arg);
             }
             case "NAME_CHANGED", "YOUR_NAME" -> {
                 this.currentUsername = arg;
@@ -161,6 +178,14 @@ public class ClientNetwork {
                 String fen = sParts.length > 1 ? sParts[1].trim() : "";
                 for (ClientListener l : listeners) l.onSpectating(roomId, fen);
             }
+            case "MOVE_HISTORY" -> {
+                // Cronologia delle mosse inviate a uno spettatore che entra a meta' partita
+                List<String> moves = new ArrayList<>();
+                for (String uci : arg.trim().split("\\s+")) {
+                    if (!uci.isBlank()) moves.add(uci);
+                }
+                for (ClientListener l : listeners) l.onMoveHistoryReceived(moves);
+            }
             case "CHECK" -> {
                 for (ClientListener l : listeners) l.onCheck(arg);
             }
@@ -196,6 +221,7 @@ public class ClientNetwork {
             }
             case "FRIENDS_LIST" -> {
                 pendingFriends.clear();
+                for (ClientListener l : listeners) l.onFriendsListUpdated(new ArrayList<>(pendingFriends));
             }
             case "FRIEND" -> {
                 // Formato: FRIEND <name> <ONLINE|OFFLINE>
@@ -228,6 +254,18 @@ public class ClientNetwork {
             case "DRAW_DECLINED" -> {
                 for (ClientListener l : listeners) l.onDrawDeclined();
             }
+            case "PONG" -> {
+                // Risposta a PING: utile per verificare che la connessione sia viva.
+                for (ClientListener l : listeners) l.onPong();
+            }
+            case "HELP" -> {
+                for (ClientListener l : listeners) l.onHelp(arg);
+            }
+            case "SERVER_SHUTDOWN" -> {
+                // Il server sta per chiudere: senza questo la disconnessione sarebbe
+                // invisibile e l'utente vedrebbe solo un socket morto.
+                for (ClientListener l : listeners) l.onServerShutdown(arg);
+            }
             case "ERROR" -> {
                 for (ClientListener l : listeners) l.onError(arg);
             }
@@ -249,6 +287,32 @@ public class ClientNetwork {
 
     public void register(String username, String password) {
         send("REGISTER " + username + " " + password);
+    }
+
+    /**
+     * @param declaredAge età dichiarata, o 0 per non dichiararla
+     */
+    public void register(String username, String password, int declaredAge) {
+        if (declaredAge > 0) {
+            send("REGISTER " + username + " " + password + " " + declaredAge);
+        } else {
+            register(username, password);
+        }
+    }
+
+    /** Esce dall'account restando collegati come ospite. */
+    public void logout() {
+        send("LOGOUT");
+    }
+
+    /** Chiede al server tutti i dati personali dell'utente (GDPR art. 15 e 20). */
+    public void exportData() {
+        send("EXPORT_DATA");
+    }
+
+    /** Cancella l'account (GDPR art. 17). */
+    public void deleteAccount(String password) {
+        send("DELETE_ACCOUNT " + password);
     }
 
     public void setName(String name) {

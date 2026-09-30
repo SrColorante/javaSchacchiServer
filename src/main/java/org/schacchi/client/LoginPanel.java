@@ -23,6 +23,7 @@ public class LoginPanel extends JPanel {
     private JTextField txtRegUser;
     private JPasswordField txtRegPass;
     private JPasswordField txtRegPassConfirm;
+    private JSpinner spnAge;
 
     // Guest
     private JTextField txtGuestNick;
@@ -57,7 +58,22 @@ public class LoginPanel extends JPanel {
 
         titlePanel.add(lblTitle);
         titlePanel.add(lblSub);
-        card.add(titlePanel, BorderLayout.NORTH);
+        // Riferimento all'informativa privacy (GDPR art. 13). Il testo completo
+        // vive in docs/privacy.md: questo rimando basta a rendere la finalita'
+        // del trattamento visibile PRIMA che l'utente fornisca dati personali.
+        JLabel lblPrivacy = new JLabel("<html><a href=''>Informativa privacy (art. 13 GDPR)</a></html>");
+        lblPrivacy.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        lblPrivacy.setToolTipText("Come vengono trattati i tuoi dati: finalità, base giuridica, conservazione, diritti");
+        lblPrivacy.setForeground(new Color(130, 180, 255));
+        lblPrivacy.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent e) {
+                showPrivacyNotice();
+            }
+        });
+        card.add(lblPrivacy, BorderLayout.NORTH);
+
+        card.add(titlePanel, BorderLayout.CENTER);
 
         // Centro: Tabs Login / Registrati / Ospite
         JTabbedPane tabs = new JTabbedPane();
@@ -125,13 +141,19 @@ public class LoginPanel extends JPanel {
     }
 
     private JPanel createRegisterTab() {
-        JPanel p = new JPanel(new GridLayout(4, 2, 10, 10));
+        JPanel p = new JPanel(new GridLayout(5, 2, 10, 10));
         p.setOpaque(false);
         p.setBorder(new EmptyBorder(15, 10, 15, 10));
 
         txtRegUser = new JTextField();
         txtRegPass = new JPasswordField();
         txtRegPassConfirm = new JPasswordField();
+
+        // Età: dato personale trattato per adempiere all'art. 8 GDPR. Il valore 0
+        // significa "non dichiarata": la registrazione resta possibile, ma il server
+        // non potrà applicare il controllo sull'età minima.
+        spnAge = new JSpinner(new SpinnerNumberModel(0, 0, 120, 1));
+        spnAge.setToolTipText("La tua età. Lascia 0 se preferisci non dichiararla.");
 
         JButton btnRegister = new JButton("Registrati");
         btnRegister.setFont(new Font("SansSerif", Font.BOLD, 13));
@@ -145,6 +167,8 @@ public class LoginPanel extends JPanel {
         p.add(txtRegPass);
         p.add(new JLabel("Conferma Password:"));
         p.add(txtRegPassConfirm);
+        p.add(new JLabel("Età (0 = non dichiarare):"));
+        p.add(spnAge);
         p.add(new JLabel(""));
         p.add(btnRegister);
 
@@ -229,9 +253,15 @@ public class LoginPanel extends JPanel {
         String u = txtRegUser.getText().trim();
         String p = new String(txtRegPass.getPassword()).trim();
         String pc = new String(txtRegPassConfirm.getPassword()).trim();
+        int age = (Integer) spnAge.getValue();
 
-        if (u.length() < 3 || p.length() < 3) {
-            lblStatus.setText("Username e password devono avere almeno 3 caratteri");
+        if (u.length() < 3) {
+            lblStatus.setText("Lo username deve avere almeno 3 caratteri");
+            lblStatus.setForeground(Color.RED);
+            return;
+        }
+        if (p.length() < 8) {
+            lblStatus.setText("La password deve avere almeno 8 caratteri");
             lblStatus.setForeground(Color.RED);
             return;
         }
@@ -241,7 +271,7 @@ public class LoginPanel extends JPanel {
             return;
         }
 
-        ensureConnected(() -> network.register(u, p));
+        ensureConnected(() -> network.register(u, p, age));
     }
 
     private void performGuestLogin() {
@@ -260,5 +290,43 @@ public class LoginPanel extends JPanel {
     public void setStatusMessage(String message, boolean isError) {
         lblStatus.setText(message);
         lblStatus.setForeground(isError ? Color.RED : new Color(100, 240, 120));
+    }
+
+    /**
+     * Riepilogo dell'informativa privacy mostrato nel client. Il testo completo,
+     * con i dati del titolare che solo il gestore può fornire, è in docs/privacy.md.
+     */
+    private void showPrivacyNotice() {
+        JTextArea area = new JTextArea(
+                "TRATTAMENTO DEI DATI PERSONALI\n"
+                + "---------------------------------------\n"
+                + "Dati trattati: username, età dichiarata, statistiche di gioco\n"
+                + "(vittorie, sconfitte, patte, ELO), lista amici, messaggi di chat.\n\n"
+                + "Finalità: gestione del gioco e ranking. I messaggi di chat sono\n"
+                + "inoltrati ai partecipanti e NON vengono conservati su disco.\n"
+                + "Gli indirizzi IP non vengono registrati nei log.\n\n"
+                + "Base giuridica: esecuzione del contratto (art. 6.1.b GDPR) per\n"
+                + "l'uso del servizio; consenso (art. 6.1.a) per la lista amici.\n\n"
+                + "Conservazione: finché l'account resta attivo o fino alla\n"
+                + "cancellazione. Non è prevista scadenza automatica.\n\n"
+                + "I tuoi diritti (art. 15-22): puoi in ogni momento\n"
+                + "  •EXPORT_DATA     per ottenere tutti i tuoi dati\n"
+                + "  •DELETE_ACCOUNT  per cancellare l'account\n"
+                + "  •LOGOUT          per uscire dall'account\n"
+                + "La cancellazione è irreversibile e rimuove anche le\n"
+                + "amicizie che ti riguardano.\n\n"
+                + "Minori: sotto i 16 anni l'uso richiede il consenso di un\n"
+                + "genitore. Sotto i 13 anni non è ammessa la registrazione.\n\n"
+                + "Informativa completa: docs/privacy.md");
+        area.setEditable(false);
+        area.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        area.setBackground(new Color(32, 34, 38));
+        area.setForeground(new Color(225, 225, 230));
+        area.setBorder(new EmptyBorder(10, 10, 10, 10));
+        JScrollPane scroll = new JScrollPane(area);
+        scroll.setPreferredSize(new Dimension(560, 460));
+        scroll.setBorder(BorderFactory.createTitledBorder(
+                "Informativa privacy — da completare con i dati del titolare"));
+        JOptionPane.showMessageDialog(this, scroll, "Informativa privacy", JOptionPane.INFORMATION_MESSAGE);
     }
 }

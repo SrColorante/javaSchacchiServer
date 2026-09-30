@@ -141,7 +141,15 @@ public class GameSession {
             spectators.add(player);
             player.setCurrentSession(this);
             player.setAssignedColor(null);
+            // Oltre al FEN si invia la cronologia delle mosse gia' giocate: uno spettatore
+            // che entra a meta' partita altrimenti vedrebbe i pezzi gia' spostati sulla
+            // scacchiera ma nessuno storico, e non potrebbe ricostruire come ci e' arrivati.
             player.sendMessage("SPECTATING " + sessionId + " " + board.toFen());
+            synchronized (moveHistory) {
+                if (!moveHistory.isEmpty()) {
+                    player.sendMessage("MOVE_HISTORY " + String.join(" ", moveHistory));
+                }
+            }
             return false;
         }
     }
@@ -238,9 +246,20 @@ public class GameSession {
      *
      * @return il motivo della patta, oppure null se la partita continua
      */
+    /**
+     * Verifica se la posizione corrente e' una patta automatica secondo le regole FIDE.
+     * L'ordine va dal motivo piu' vincolante al meno vincolante: senza pezzi capaci di
+     * dare il mate non ha senso parlare di 50 mosse, e la quintuple ripetizione e'
+     * automatica per norma mentre la tripla e' trattata qui come automatica per scelta
+     * di progetto (vedi i limiti noti nel README).
+     *
+     * @return il motivo della patta, oppure null se la partita continua
+     */
     private String automaticDrawReason() {
         if (board.isInsufficientMaterial()) return "INSUFFICIENT_MATERIAL";
+        if (board.isSeventyFiveMoveDraw()) return "SEVENTY_FIVE_MOVE_RULE";
         if (board.isFiftyMoveDraw()) return "FIFTY_MOVE_RULE";
+        if (board.isFivefoldRepetition()) return "FIVEFOLD_REPETITION";
         if (board.isThreefoldRepetition()) return "THREEFOLD_REPETITION";
         return null;
     }
@@ -248,7 +267,9 @@ public class GameSession {
     private static String drawDescription(String reason) {
         return switch (reason) {
             case "INSUFFICIENT_MATERIAL" -> "Materiale insufficiente per il mate";
+            case "SEVENTY_FIVE_MOVE_RULE" -> "Regola delle 75 mosse";
             case "FIFTY_MOVE_RULE" -> "Regola delle 50 mosse";
+            case "FIVEFOLD_REPETITION" -> "Ripetizione della posizione per cinque volte";
             case "THREEFOLD_REPETITION" -> "Ripetizione della posizione per tre volte";
             default -> "Patta automatica";
         };

@@ -1,6 +1,7 @@
 package org.schacchi.server;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
@@ -21,6 +22,19 @@ public class Server {
 
     public static final int DEFAULT_PORT = 12345;
 
+    /**
+     * Tetto di connessioni contemporanee. Ogni connessione consuma un thread del pool
+     * per tutta la sua durata, quindi il limite protegge da un flood di connessioni
+     * che, con un pool illimitato, consumerebbe memoria e thread senza controllo.
+     * Sovrascrivibile con la variabile d'ambiente {@code MAX_CLIENTS}.
+     */
+    public static final int DEFAULT_MAX_CLIENTS = 200;
+    private final int maxClients;
+
+    /** Timeout di inattivita' sui socket dei client: 0 per disabilitarlo. */
+    public static final int DEFAULT_SOCKET_TIMEOUT_MS = 0;
+    private final int socketTimeoutMs;
+
     /** Porta richiesta. Diventa la porta effettiva dopo l'associazione del socket. */
     private int port;
     private ServerSocket serverSocket;
@@ -38,7 +52,7 @@ public class Server {
     public Server(int port) {
         // Il percorso predefinito mantiene la persistenza attiva: passare null
         // disattiverebbe del tutto il salvataggio degli account.
-        this(port, AccountManager.DEFAULT_DATA_FILE);
+        this(port, AccountManager.DEFAULT_DATA_FILE, 0);
     }
 
     /**
@@ -46,12 +60,53 @@ public class Server {
      * @param accountsFile percorso del file degli account; null per non salvare su disco
      */
     public Server(int port, String accountsFile) {
+        this(port, accountsFile, 0);
+    }
+
+    /**
+     * @param port         porta su cui mettersi in ascolto; 0 per una porta libera scelta dal sistema
+     * @param accountsFile percorso del file degli account; null per non salvare su disco
+     * @param maxClients   tetto di connessioni contemporanee; 0 per usare l'impostazione
+     *                     predefinita o la variabile d'ambiente {@code MAX_CLIENTS}
+     */
+    public Server(int port, String accountsFile, int maxClients) {
         this.port = port;
-        this.clientPool = Executors.newCachedThreadPool();
+        this.maxClients = maxClients > 0 ? maxClients : readPositiveEnv("MAX_CLIENTS", DEFAULT_MAX_CLIENTS);
+        this.socketTimeoutMs = readNonNegativeEnv("SOCKET_TIMEOUT_MS", DEFAULT_SOCKET_TIMEOUT_MS);
+        // Pool BOSSERVATO e limitato: ogni connessione occupa un thread per tutta la sua
+        // durata, quindi un pool illimitato (cached) non mette alcun tetto al numero di
+        // thread vivi contemporaneamente.
+        this.clientPool = Executors.newFixedThreadPool(this.maxClients, runnable -> {
+            Thread t = new Thread(runnable, "ChessClient");
+            t.setDaemon(true);
+            return t;
+        });
         this.sessionManager = new SessionManager();
         this.accountManager = new AccountManager(accountsFile);
         this.connectedClients = ConcurrentHashMap.newKeySet();
         this.listeners = new CopyOnWriteArrayList<>();
+    }
+
+    private static int readPositiveEnv(String name, int fallback) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static int readNonNegativeEnv(String name, int fallback) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            return parsed >= 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /**
@@ -110,10 +165,13 @@ public class Server {
         // "Riavvia Server" della dashboard) ne serve uno nuovo, altrimenti ogni
         // submit() successivo verrebbe rifiutato.
         if (clientPool == null || clientPool.isShutdown() || clientPool.isTerminated()) {
-            clientPool = Executors.newCachedThreadPool();
+            // Pool BOSSERVATO e limitato, non cached: ogni connessione occupa un
+            // thread per tutta la sua durata, quindi un cached pool (illimitato)
+            // permette a un flood di aprire thread senza tetto e di esaurire la memoria.
         }
         log("==================================================");
         log(" Server Scacchi avviato sulla porta " + port);
+        log(" Connessioni massime contemporanee: " + maxClients);
         log(" Host configurato per: game.cristianrenosto.party");
         log(" In attesa di connessioni client...");
         log("==================================================");
@@ -125,7 +183,16 @@ public class Server {
         try {
             while (running && !serverSocket.isClosed()) {
                 Socket clientSocket = serverSocket.accept();
-                log("Nuovo client connesso da: " + clientSocket.getRemoteSocketAddress());
+                // Gli indirizzi IP sono dato personale (GDPR art. 4(1)): non vengono
+                // scritti nei log. Per la diagnostica del server si registra solo
+                // l'esito della connessione, non chi si è connesso.
+                if (connectedClients.size() >= maxClients) {
+                    // Rifiuto esplicito invece di accodare: oltre il tetto di connessioni
+                    // il client riceve un motivo e può riprovare, mentre il server non
+                    // cresce in thread indefinitamente.
+                    rejectOverloaded(clientSocket);
+                    continue;
+                }
                 ConnectionHandler handler = new ConnectionHandler(clientSocket);
                 clientPool.submit(handler);
             }
@@ -139,7 +206,24 @@ public class Server {
     }
 
     /**
-     * Avvia il server in un thread in background (non bloccante).
+     * Rifiuta una connessione oltre il tetto massimo, chiudendo subito il socket.
+     * Il client riceve un messaggio leggibile prima che la connessione venga chiusa.
+     */
+    private void rejectOverloaded(Socket clientSocket) {
+        try (PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
+            out.println("ERROR Server al limite di connessioni contemporanee. Riprova piu' tardi.");
+        } catch (IOException ignored) {
+            // Il client potrebbe aver gia' chiuso: in tal caso non c'e' nulla da fare.
+        }
+        try {
+            clientSocket.close();
+        } catch (IOException ignored) {
+        }
+        log("Connessione rifiutata: raggiunto il limite di " + maxClients + " client contemporanei");
+    }
+
+    /**
+     * Avvia un server in background (non bloccante).
      */
     public void startAsync() {
         Thread serverThread = new Thread(() -> {
@@ -191,6 +275,14 @@ public class Server {
         return port;
     }
 
+    public int getMaxClients() {
+        return maxClients;
+    }
+
+    public int getSocketTimeoutMs() {
+        return socketTimeoutMs;
+    }
+
     public SessionManager getSessionManager() {
         return sessionManager;
     }
@@ -203,6 +295,24 @@ public class Server {
         if (username == null) return false;
         for (ConnectionHandler client : connectedClients) {
             if (username.equalsIgnoreCase(client.getUsername())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Verifica se un nome utente e' gia' in uso da una connessione attiva.
+     * Serve a impedire che due client live condividano una stessa identita': i risultati
+     * di partita vengono registrati per nome, quindi un nome duplicato farebbe finire
+     * vittorie e sconfitte sullo stesso account senza che nessuno dei due se ne accorga.
+     *
+     * @param requester il client che sta chiedendo il nome, escluso dal controllo
+     */
+    public boolean isUsernameInUse(String username, ConnectionHandler requester) {
+        if (username == null) return false;
+        for (ConnectionHandler client : connectedClients) {
+            if (client != requester && username.equalsIgnoreCase(client.getUsername())) {
                 return true;
             }
         }

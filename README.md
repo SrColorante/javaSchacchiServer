@@ -50,6 +50,16 @@ mvn compile exec:java -Dexec.mainClass="org.schacchi.ClientMain"
 java -cp target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar org.schacchi.ClientMain
 ```
 
+### Variabili d'ambiente
+
+| Variabile | Predefinito | Effetto |
+|---|---|---|
+| `PORT` | `12345` | Porta di ascolto |
+| `MAX_CLIENTS` | `200` | Tetto di connessioni contemporanee |
+| `SOCKET_TIMEOUT_MS` | `0` (disabilitato) | Timeout di inattività sui socket |
+| `PBKDF2_ITERATIONS` | `600000` | Fattore di lavoro per le password |
+
+
 > **`java -jar … 8080` non funziona.** `Main.main` **ignora `args`**: la porta si
 > imposta solo con la variabile d'ambiente `PORT`. Passare la porta come argomento
 > viene silenziosamente ignorato e il server apre comunque 12345.
@@ -70,12 +80,12 @@ mvn -Dtest=ChessBoardTest test
 mvn -Dtest=ChessServerIntegrationTest test
 ```
 
-**70 test** su 4 classi:
+**80 test** su 4 classi:
 
 | Classe | Righe | Test | Copre |
 |---|---:|---:|---|
 | `ChessBoardTest` | 530 | 40 | Perft, regole speciali, FEN, patte, copia |
-| `ChessServerIntegrationTest` | 639 | 15 | End-to-end su socket reali |
+| `ChessServerIntegrationTest` | 916 | 25 | End-to-end su socket reali, diritti GDPR, limiti di connessione |
 | `GameSessionDrawTest` | 281 | 8 | Logica di patta a livello di sessione |
 | `ChessServerTest` | 161 | 7 | Smoke test piatti (pre-JUnit, ha ancora un `main`) |
 
@@ -102,9 +112,9 @@ javaSchacchiServer/
 └── src/
     ├── main/java/org/schacchi/
     │   ├── Main.java              158   entry point server: dashboard Swing o console headless
-    │   ├── ClientMain.java        227   entry point client: JFrame + CardLayout
+    │   ├── ClientMain.java        308   entry point client: JFrame + CardLayout
     │   ├── model/                       Il dominio e il motore di regole
-    │   │   ├── ChessBoard.java     918   generazione mosse, legalità, scacco/matto/stallo,
+    │   │   ├── ChessBoard.java     936   generazione mosse, legalità, scacco/matto/stallo,
     │   │   │                             castello, en passant, promozione, FEN, patte
     │   │   ├── Move.java            87   immutabile (da, a, promozione) + UCI
     │   │   ├── Position.java        88   casella internata e immutabile
@@ -112,26 +122,26 @@ javaSchacchiServer/
     │   │   ├── PieceType.java       32
     │   │   └── PieceColor.java      10
     │   ├── server/                      Il networking e le sessioni
-    │   │   ├── GameSession.java     404   una partita: giocatori, spettatori, pipeline mosse
-    │   │   ├── ConnectionHandler.java 366 per connessione; lo switch a 20 casi, 21 comandi
-    │   │   ├── AccountManager.java  321   register/auth/amici/stats/ELO + persistenza
-    │   │   ├── Server.java          294   singleton TCP acceptor, thread pool, listener
+    │   │   ├── GameSession.java     425   una partita: giocatori, spettatori, pipeline mosse
+    │   │   ├── ConnectionHandler.java 529 per connessione; lo switch a 24 casi, 28 comandi
+    │   │   ├── AccountManager.java  535   auth PBKDF2, amici, ELO, cancellazione GDPR
+    │   │   ├── Server.java          404   acceptor TCP singleton, pool limitato, tetto connessioni
     │   │   ├── SessionManager.java  112   registro stanze + coda di matchmaking
     │   │   └── ServerListener.java   17   9 callback di default no-op
     │   └── client/                     La GUI Swing
     │       ├── ChessBoardPanel.java  341   scacchiera interattiva disegnata a mano
-    │       ├── GameViewPanel.java    340   schermata di gioco
-    │       ├── ClientNetwork.java    328   socket, thread lettore, builder di comandi
-    │       ├── LobbyPanel.java       298   lobby: stanze, amici, profilo/ELO
-    │       ├── LoginPanel.java       264   configurazione + tab Login/Register/Guest
-    │       ├── ClientListener.java    35   interfaccia di callback (tutti default)
+    │       ├── GameViewPanel.java    365   schermata di gioco
+    │       ├── ClientNetwork.java    392   socket, thread lettore, builder di comandi
+    │       ├── LobbyPanel.java       404   lobby: stanze, amici, profilo e tab "I Miei Dati"
+    │       ├── LoginPanel.java       332   connessione, tab Login/Register/Guest, informativa
+    │       ├── ClientListener.java    52   callback, incluso onDataExported/onAccountDeleted
     │       ├── RoomInfo.java          30   DTO immutabile
     │       ├── FriendInfo.java        24   DTO immutabile
     │       └── ClientMain.java        10   shim verso org.schacchi.ClientMain
-    └── test/java/org/schacchi/         4 classi, 1 611 righe, 70 test
+    └── test/java/org/schacchi/         4 classi, 1 888 righe, 80 test
 ```
 
-**Totale: 4 755 righe di main, 1 611 di test.**
+**Totale: 5 642 righe di main, 1 888 di test.**
 
 ## Protocollo
 
@@ -139,20 +149,17 @@ TCP in chiaro, righe separate da `\n`, `CMD argomento` separati da spazi. Nessun
 handshake, nessuna versione, nessun prefisso di lunghezza, nessun request id,
 nessun codice di errore.
 
-**21 comandi** del client: `REGISTER`, `LOGIN`, `FRIEND_ADD`, `FRIENDS`, `STATS`,
+**28 comandi** del client, dai **24 casi** dello switch: `REGISTER`, `LOGIN`,
+`LOGOUT`, `EXPORT_DATA`, `DELETE_ACCOUNT`, `FRIEND_ADD`, `FRIENDS`, `STATS`,
 `NAME`, `CREATE`, `JOIN`, `PLAY`/`QUICKMATCH`/`MATCH`, `LIST`, `MOVE`, `RESIGN`,
 `DRAW_OFFER`, `DRAW_ACCEPT`, `DRAW_DECLINE`, `CHAT`, `BOARD`/`FEN`, `LEAVE`,
-`PING`, `QUIT`/`EXIT`.
+`HELP`, `PING`, `QUIT`/`EXIT`.
 
-**30 messaggi** dal server: `CONNECTED`, `YOUR_NAME`, `HELP`, `REGISTER_OK`,
-`LOGIN_OK`, `NAME_CHANGED`, `FRIEND_ADDED`, `FRIENDS_LIST`, `FRIEND`,
-`FRIENDS_END`, `STATS`, `ROOM_CREATED`, `ROOM_LIST`, `ROOM`, `GAME_START`,
-`SPECTATING`, `MOVE_OK`, `OPPONENT_MOVE`, `MOVE`, `FEN`, `CHECK`, `GAME_OVER`,
-`CHAT`, `DRAW_OFFER`, `DRAW_DECLINED`, `OPPONENT_DISCONNECTED`, `INFO`, `ERROR`,
-`PONG`, `SERVER_SHUTDOWN`.
+**36 messaggi** dal server: `CHAT`, `CHECK`, `CONNECTED`, `DELETE_OK`, `DRAW_DECLINED`, `DRAW_OFFER`, `ERROR`, `EXPORT_EMPTY`, `EXPORT_END`, `EXPORT_LINE`, `FEN`, `FRIEND`, `FRIEND_ADDED`, `FRIENDS_END`, `FRIENDS_LIST`, `GAME_START`, `GAME_OVER`, `HELP`, `INFO`, `LOGIN_OK`, `LOGOUT_OK`, `MOVE`, `MOVE_HISTORY`, `MOVE_OK`, `NAME_CHANGED`, `OPPONENT_DISCONNECTED`, `OPPONENT_MOVE`, `PONG`, `REGISTER_OK`, `ROOM`, `ROOM_CREATED`, `ROOM_LIST`, `SERVER_SHUTDOWN`, `SPECTATING`, `STATS`, `YOUR_NAME`.
 
 Motivi di `GAME_OVER`: `CHECKMATE`, `STALEMATE`, `INSUFFICIENT_MATERIAL`,
-`FIFTY_MOVE_RULE`, `THREEFOLD_REPETITION`, `AGREEMENT`, `RESIGNATION`, `FORFEIT`.
+`SEVENTY_FIVE_MOVE_RULE`, `FIFTY_MOVE_RULE`, `FIVEFOLD_REPETITION`,
+`THREEFOLD_REPETITION`, `AGREEMENT`, `RESIGNATION`, `FORFEIT`.
 
 ## Il fatto di design più importante
 
@@ -166,25 +173,55 @@ FEN utilizzabile.
 ## Persistenza
 
 Gli account stanno in **`accounts.txt`**, risolto **rispetto alla directory di
-lavoro corrente**. Otto campi separati da due punti:
+lavoro corrente**. Dieci campi separati da due punti:
 
 ```
-username:salt:hash:w:l:d:elo:friends
+username:salt:iterazioni:hash:w:l:d:elo:eta:friends
 ```
 
 - `salt`: 16 byte da `SecureRandom`, esadecimale
-- `hash`: SHA-256 di `salt + ":" + password`
+- `iterazioni`: fattore di lavoro PBKDF2 (default `600000`, minimo `1000`)
+- `hash`: **PBKDF2-HMAC-SHA256** di `salt + ":" + password`
 - Confronto in **tempo costante** via `MessageDigest.isEqual`; il tempo di risposta
   non distingue "utente inesistente" da "password errata"
 - Scrittura atomica: `write <file>.tmp` poi `Files.move(…, REPLACE_EXISTING)`, così
   un crash a metà scrittura non corrompe il file
-- Al caricamento servono **almeno 7 campi**; l'ottavo (`friends`, lista separata da
-  virgole) è **facoltativo**. Le righe con meno di 7 campi vengono saltate e gli
-  account con password in chiaro **non vengono migrati** (scelta deliberata)
+- Al caricamento servono **almeno 8 campi**; `eta` e `friends` sono **facoltativi**.
+  Le righe con meno campi vengono saltate e gli account con password in chiaro
+  **non vengono migrati** (scelta deliberata): con il formato a 8 campi
+  l'iterazione letta è quella memorizzata, che per i file precedenti è assente
+  e viene riportata al minimo
 - I contatori sono `volatile`: il lock di `AccountManager` protegge solo la
   mutazione, i thread dei client li leggono senza passarci
 - ELO: `+15` alla vittoria, `max(100, elo - 15)` alla sconfitta, invariato alla
   patta. Default 1200. **Non è la formula FIDE**
+
+### Migrazione dai formati precedenti
+
+Il formato è cambiato due volte (da 7 a 8 campi con l'hash SHA-256, poi a 10 con
+PBKDF2 e l'età). **Le righe nel vecchio formato non vengono migrate e vengono
+saltate**: gli account vanno ricreati. È una scelta deliberata — migrare
+automaticamente da SHA-256 a PBKDF2 richiederebbe di conservare la vecchia traccia
+accanto a quella nuova, vanificando il vantaggio del cambio.
+
+## Privacy e GDPR
+
+Dettaglio completo in [`docs/privacy.md`](./docs/privacy.md).
+
+| Richiesta GDPR | Stato |
+|---|---|
+| art. 17 — cancellazione | `DELETE_ACCOUNT <password>` |
+| art. 15 e 20 — accesso e portabilità | `EXPORT_DATA` |
+| art. 8 — minori | età minima 13, consenso autonomo da 16 |
+| art. 32 — password | PBKDF2-HMAC-SHA256, 600 000 iterazioni, sale per utente |
+| minimizzazione | **nessun IP nei log**, chat non conservata |
+| art. 13 — informativa | `docs/privacy.md` (template, **da completare**) |
+| art. 30 — registro trattamenti | `docs/privacy.md` |
+
+> **Non è ancora a norma.** Restano due lacune che il codice non può chiudere:
+> il traffico è TCP in chiaro (le password passano in chiaro sul filo) e
+> l'informativa privacy è un template con campi `[DA COMPILARE]`. Vedi
+> `docs/privacy.md` §7 e §10.
 
 ## Confronto con `chess-server`
 
@@ -202,39 +239,46 @@ non un fork: nessun codice, package, protocollo o documentazione condiviso.
 
 ## Limiti noti
 
+### Risolti in questa versione
+
+- ~~SHA-256 non è una KDF~~ → ora **PBKDF2-HMAC-SHA256, 600 000 iterazioni**
+- ~~nessuna unicità dei nomi~~ → `NAME` e `LOGIN` rifiutano un nome già collegato
+- ~~`newCachedThreadPool()` non è limitato~~ → pool a dimensione fissa con tetto
+  `MAX_CLIENTS` (default 200); le connessioni oltre vengono rifiutate con un motivo
+- ~~nessun timeout di lettura~~ → `SOCKET_TIMEOUT_MS` (default disabilitato)
+- ~~gli spettatori non vedono la cronologia~~ → `MOVE_HISTORY` all'ingresso
+- ~~`HELP` incompleto~~ → elenca tutti i 28 comandi, ed è interrogabile con `HELP`
+- ~~il client ignora `HELP`, `PONG` e `SERVER_SHUTDOWN`~~ → tutti gestiti
+- ~~quintuple ripetizione e 75 mosse non implementate~~ → ora automatiche
+- ~~IP dei client scritti nei log~~ → rimossi
+
+### Aperti
+
 - 🔴 **Tutto il traffico è TCP in chiaro.** Le password passano in chiaro come
-  `LOGIN <utente> <password>`. Lo storage lato server è fatto bene, ma non
-  serve a nulla sul filo.
-- 🔴 **SHA-256 non è una KDF per password.** Nessun PBKDF2/bcrypt/scrypt/Argon2,
-  nessun work factor: un `accounts.txt` trapelato si rompe a velocità GPU.
+  `LOGIN <utente> <password>`. Lo storage lato server è fatto bene (PBKDF2,
+  sale, confronto costante), ma non serve a nulla sul filo. **È la lacuna più
+  grave e richiede TLS, che il codice applicativo non può risolvere.**
+- 🔴 **Informativa privacy incompleta**: `docs/privacy.md` è un template con
+  campi `[DA COMPILARE]` (titolare, DPO, hosting, trasferimenti extra SEE).
+- 🔴 **Nessuna procedura di notifica breach** (art. 33 GDPR).
+- 🟠 **`accounts.txt` non è cifrato a riposo.** Chi legge il file ottiene username,
+  età, statistiche e liste amici. Le password sono protette dalla KDF, gli altri dati no.
+- 🟠 **L'età è dichiarata, non verificata.** Un minore può dichiarare un'età falsa.
 - 🔴 **La disconnessione è forfeit immediato e permanente**, senza periodo di
   grazia, e **muove l'ELO**. Il pulsante "Arresta Server" della dashboard chiude
   ogni socket: ogni partita in corso finisce come forfeit e ogni punteggio cambia.
 - **La ripetizione a tre mosse è trattata come patta automatica**, non come
-  dichiarazione. Il regolamento FIDE la tratta come *claim*; il quintplice è
-  automatico e questo codice non lo implementa. Perciò l'affermazione "garante
-  delle regole ufficiali FIDE" sovradichiara.
-- **Nessuna unicità dei nomi**: `NAME` e `REGISTER` non verificano che l'account
-  non sia già collegato. Due connessioni vive possono condividere un'identità, e
-  i risultati vengono registrati su quel nome condiviso.
-- **`newCachedThreadPool()` non è limitato**: nessun tetto di connessioni, nessun
-  rate limiting, nessun timeout di lettura sui socket lato server. Un flood di
-  connessioni crea thread illimitati.
-- **Gli spettatori non vedono la cronologia**: `moveHistory` non viene mai
-  trasmessa, quindi chi si collega a metà partita ha un pannello vuoto per sempre.
+  dichiarazione. Il regolamento FIDE la tratta come *claim*. Il quintplice, che è
+  automatico, ora è implementato; resta la sovradichiarazione sulla tripla.
+- **Nessun rate limiting**: c'è un tetto di connessioni, ma nessun limite di
+  richieste al secondo per connessione.
 - **Nessun riconnessione**: un calo TCP è un forfeit. Il client non ha logica di
   reconnect né backoff.
-- **`HELP` del server è incompleto**: omette `REGISTER`, `LOGIN`, `STATS`,
-  `FRIENDS`, `FRIEND_ADD`, `PING` e `SPECTATING`.
-- Il client **ignora silenziosamente** `HELP`, `PONG` e `SERVER_SHUTDOWN`: un
-  riavvio del server è invisibile, il socket muore e basta.
+- **Nessun `LICENSE`, nessuna CI.**
 - **`loadFen` rifiuta un FEN malformato senza alterare lo stato**: la posizione
   viene decodificata e validata in strutture locali e copiata nei campi solo dopo
   l'ultimo controllo, quindi un caricamento fallito lascia la scacchiera intatta
   (non azzerata né parzialmente popolata).
-- Nessun `.gitignore` iniziale (aggiunto ora): `target/` era tracciato. Nessuna
-  `LICENSE`, nessuna CI. Un solo commit in assoluto: tutto il motore di scacchi è
-  lavoro non committato.
 
 Dettaglio completo in [`docs.md`](./docs.md).
 
@@ -243,3 +287,4 @@ Dettaglio completo in [`docs.md`](./docs.md).
 | File | Contenuto |
 |---|---|
 | [`docs.md`](./docs.md) | Architettura, modello di dominio, il motore di regole, protocollo, concorrenza, test con perft, limiti con riferimenti di codice |
+| [`docs/privacy.md`](./docs/privacy.md) | Informativa privacy GDPR (template), registro trattamenti, misure di sicurezza, non conformità note |

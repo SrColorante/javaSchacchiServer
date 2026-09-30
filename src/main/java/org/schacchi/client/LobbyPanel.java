@@ -38,6 +38,13 @@ public class LobbyPanel extends JPanel {
     private JLabel lblProfileRecord;
     private JLabel lblProfileWinrate;
 
+    // Tab Privacy
+    private JTextArea privacyDataArea;
+    private JLabel lblPrivacyStatus;
+    private final JButton btnExportData = new JButton("Scarica i miei dati");
+    private final JButton btnLogout = new JButton("Esci dall'account");
+    private final JButton btnDeleteAccount = new JButton("Cancella account");
+
     public LobbyPanel(ClientNetwork network) {
         this.network = network;
         setLayout(new BorderLayout(10, 10));
@@ -54,6 +61,7 @@ public class LobbyPanel extends JPanel {
         tabbedPane.addTab("Stanze & Matchmaking", createRoomsTab());
         tabbedPane.addTab("Amici", createFriendsTab());
         tabbedPane.addTab("Il Mio Profilo", createProfileTab());
+        tabbedPane.addTab("I Miei Dati", createPrivacyTab());
 
         add(tabbedPane, BorderLayout.CENTER);
     }
@@ -266,6 +274,104 @@ public class LobbyPanel extends JPanel {
 
         panel.add(card);
         return panel;
+    }
+
+    /**
+     * Tab "I Miei Dati": esercizio dei diritti dell'interessato previsti dal GDPR.
+     * Espone l'accesso ai dati (art. 15 e 20), la disconnessione dall'account e la
+     * cancellazione (art. 17), che è irreversibile e chiede conferma esplicita.
+     */
+    private JPanel createPrivacyTab() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setOpaque(false);
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        JPanel topBox = new JPanel(new BorderLayout(6, 6));
+        topBox.setOpaque(false);
+        topBox.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(new Color(70, 75, 85)),
+                "Dati personali che il server conserva su di te (art. 15 e 20 GDPR)",
+                0, 0, new Font("SansSerif", Font.BOLD, 12), Color.LIGHT_GRAY));
+
+        privacyDataArea = new JTextArea();
+        privacyDataArea.setEditable(false);
+        privacyDataArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        privacyDataArea.setBackground(new Color(32, 34, 38));
+        privacyDataArea.setForeground(new Color(225, 225, 230));
+        privacyDataArea.setText("Premi \"Scarica i miei dati\" per vedere cosa il server\n"
+                + "conserva sul tuo account.\n");
+        topBox.add(privacyDataArea, BorderLayout.CENTER);
+
+        lblPrivacyStatus = new JLabel(" ");
+        lblPrivacyStatus.setForeground(new Color(180, 185, 200));
+        lblPrivacyStatus.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        topBox.add(lblPrivacyStatus, BorderLayout.SOUTH);
+        panel.add(topBox, BorderLayout.CENTER);
+
+        // Pulsanti: export, logout, cancellazione
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 6));
+        actions.setOpaque(false);
+
+        btnExportData.addActionListener(e -> {
+            privacyDataArea.setText("Richiesta inviata al server...\n");
+            network.exportData();
+        });
+
+        btnLogout.addActionListener(e -> {
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "Vuoi uscire dall'account restando collegato come ospite?\n"
+                            + "L'account non verrà cancellato.",
+                    "Esci dall'account", JOptionPane.YES_NO_OPTION);
+            if (confirm == JOptionPane.YES_OPTION) {
+                network.logout();
+            }
+        });
+
+        btnDeleteAccount.setForeground(new Color(230, 80, 80));
+        btnDeleteAccount.addActionListener(e -> {
+            JPasswordField field = new JPasswordField(14);
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "<html><body><p><b>Cancellare definitivamente il tuo account?</b></p>"
+                            + "<p>Verranno rimossi: profilo, statistiche, ELO e tutte le amicizie.<br>"
+                            + "Gli altri utenti non vedranno più il tuo nome nelle liste amici.</p>"
+                            + "<p><b>L'operazione è irreversibile.</b></p>"
+                            + "<p>Inserisci la password per confermare.</p></body></html>",
+                    "Cancellazione account", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm != JOptionPane.YES_OPTION) return;
+
+            String password = new String(field.getPassword());
+            if (password.isEmpty()) {
+                lblPrivacyStatus.setText("Cancellazione annullata: password non inserita.");
+                return;
+            }
+            network.deleteAccount(password);
+        });
+
+        actions.add(btnExportData);
+        actions.add(btnLogout);
+        actions.add(btnDeleteAccount);
+        panel.add(actions, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    /** Accumula una riga dei dati personali ricevuti dal server. */
+    public void appendDataLine(String line) {
+        privacyDataArea.append(line + "\n");
+    }
+
+    public void setDataAreaText(String text) {
+        privacyDataArea.setText(text);
+    }
+
+    public void setPrivacyStatus(String message) {
+        lblPrivacyStatus.setText(message);
+    }
+
+    /** Rende disponibili i pulsanti che hanno senso solo per un account registrato. */
+    public void setAccountActionsEnabled(boolean enabled) {
+        btnDeleteAccount.setEnabled(enabled);
+        btnLogout.setEnabled(enabled);
     }
 
     public void updateUserInfo(String username, int elo, int wins, int losses, int draws) {

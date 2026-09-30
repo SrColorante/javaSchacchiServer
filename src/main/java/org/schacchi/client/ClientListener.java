@@ -12,6 +12,14 @@ public interface ClientListener {
 
     default void onLoginSuccess(String username, int elo, int wins, int losses, int draws) {}
     default void onRegisterSuccess(String username) {}
+    default void onLogoutSuccess() {}
+    /** Una riga dei dati personali dell'utente (GDPR art. 15 e 20). */
+    default void onDataExported(String line) {}
+    default void onDataExportComplete(String summary) {}
+    /** L'utente è ospite: il server non conserva dati su di lui. */
+    default void onDataExportEmpty(String info) {}
+    /** L'account è stato cancellato (GDPR art. 17). */
+    default void onAccountDeleted(String username) {}
     default void onError(String errorMessage) {}
     default void onInfo(String infoMessage) {}
 
@@ -32,4 +40,13 @@ public interface ClientListener {
     default void onChatMessage(String sender, String message) {}
     default void onDrawOfferReceived() {}
     default void onDrawDeclined() {}
+
+    /** Risposta a PING: la connessione e' viva. */
+    default void onPong() {}
+    /** Storico delle mosse inviato a uno spettatore che entra a meta' partita. */
+    default void onMoveHistoryReceived(List<String> moves) {}
+    /** Testo di aiuto del server, ricevuto all'avvio o con il comando HELP. */
+    default void onHelp(String helpText) {}
+    /** Il server sta per arrestarsi: la connessione verra' chiusa. */
+    default void onServerShutdown(String reason) {}
 }

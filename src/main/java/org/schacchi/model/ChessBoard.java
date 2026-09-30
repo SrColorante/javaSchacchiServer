@@ -149,10 +149,28 @@ public class ChessBoard {
     }
 
     /**
+     * Regola delle 75 mosse: estensione della precedente a 75 mosse consecutive.
+     * Come la regola delle 50, non e' richiesta alcuna rivendicazione del giocatore:
+     * l'arbitro deve dichiarare la patta (art. 9.3.2 FIDE).
+     */
+    public boolean isSeventyFiveMoveDraw() {
+        return halfmoveClock >= 150;
+    }
+
+    /**
      * Ripetizione: la stessa posizione (pezzi, turno, arrocco, en passant) si e' verificata almeno 3 volte.
      */
     public boolean isThreefoldRepetition() {
         return getRepetitionCount() >= 3;
+    }
+
+    /**
+     * Quintuple ripetizione: la stessa posizione si e' verificata almeno 5 volte.
+     * A differenza della tripla e' automatica e non richiede rivendicazione
+     * (art. 9.2.2 FIDE).
+     */
+    public boolean isFivefoldRepetition() {
+        return getRepetitionCount() >= 5;
     }
 
     /**

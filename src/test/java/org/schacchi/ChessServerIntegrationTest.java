@@ -39,6 +39,153 @@ public class ChessServerIntegrationTest {
     private final List<TestClient> clients = new ArrayList<>();
 
     /**
+     * Password sufficientemente lunga per la registrazione (minimo 8 caratteri).
+     * I test precedenti usavano "password123", che ora è troppo corta.
+     */
+    private static final String PW = "password123";
+
+    @Test
+    @DisplayName("Diritto di accesso: EXPORT_DATA restituisce i dati personali")
+    void exportDataReturnsPersonalData() throws IOException {
+        TestClient client = connect();
+        client.await("CONNECTED");
+        client.send("REGISTER Esporta " + PW + " 30");
+        assertNotNull(client.await("REGISTER_OK Esporta"));
+
+        client.send("EXPORT_DATA");
+        String usernameLine = client.await("EXPORT_LINE username:");
+        assertTrue(usernameLine.contains("Esporta"), "Deve comparire lo username, ottenuto: " + usernameLine);
+        client.await("EXPORT_LINE elo:");
+        client.await("EXPORT_LINE amici:");
+        String ageLine = client.await("EXPORT_LINE eta_dichiarata:");
+        assertTrue(ageLine.contains("30"), "Deve comparire l'eta' dichiarata, ottenuto: " + ageLine);
+        assertTrue(client.sawMessageStartingWith("EXPORT_END"), "L'export deve terminare con EXPORT_END");
+
+        // La traccia della password non deve mai essere mostrata
+        assertFalse(String.join("\n", client.messages()).contains("passwordHash"),
+                "L'esportazione non deve contenere la traccia della password");
+    }
+
+    @Test
+    @DisplayName("Diritto di cancellazione: DELETE_ACCOUNT rimuove l'account e le amicizie")
+    void deleteAccountRemovesData() throws IOException {
+        TestClient alice = connect();
+        TestClient bob = connect();
+        alice.await("CONNECTED");
+        bob.await("CONNECTED");
+
+        alice.send("REGISTER AliceDel " + PW);
+        alice.await("REGISTER_OK AliceDel");
+        bob.send("REGISTER BobDel " + PW);
+        bob.await("REGISTER_OK BobDel");
+
+        // Diventano amici
+        alice.send("FRIEND_ADD BobDel");
+        alice.await("FRIEND_ADDED BobDel");
+        // Le amicizie devono essere reciproche: await() attende e fallisce da sé
+        bob.send("FRIENDS");
+        bob.await("FRIEND AliceDel");
+
+        // Cancellazione con password sbagliata: rifiutata
+        alice.send("DELETE_ACCOUNT wrongpass");
+        alice.awaitErrorContaining("Password non corretta");
+
+        // Cancellazione con password corretta
+        alice.send("DELETE_ACCOUNT " + PW);
+        String deleted = alice.await("DELETE_OK");
+        assertTrue(deleted.contains("AliceDel"), "Il messaggio deve confermare la cancellazione: " + deleted);
+
+        // Non si può più fare login
+        TestClient fresh = connect();
+        fresh.await("CONNECTED");
+        fresh.send("LOGIN AliceDel " + PW);
+        fresh.awaitErrorContaining("Credenziali non valide");
+
+        // Il nome non deve più comparire nella lista amici di Bob. Bob aveva già
+        // chiesto FRIENDS quando Alice esisteva ancora, quindi il numero di
+        // risposte va contato DOPO l'invio e deve crescere: altrimenti si leggerebbe
+        // la lista vecchia, che conteneva ancora il nome cancellato.
+        int before = bob.countMessages("FRIENDS_LIST");
+        bob.send("FRIENDS");
+        bob.awaitCount("FRIENDS_LIST", before + 1);
+        assertEquals("FRIENDS_LIST 0", bob.nthMessage("FRIENDS_LIST", before + 1),
+                "Dopo la cancellazione la lista amici di Bob deve essere vuota");
+    }
+
+    @Test
+    @DisplayName("Cancellazione: il riferimento residuo sparisce anche a nomeDiverso")
+    void deleteRemovesResidualFriendReference() {
+        // Regressione: la rimozione confrontava i nomi con equals() esatto, ma gli
+        // account sono indicizzati per chiave minuscola mentre le liste amici
+        // conservano le maiuscole originali. Con nomi di maiuscole diverse il
+        // riferimento residuo sopravviveva alla cancellazione.
+        org.schacchi.server.AccountManager manager =
+                new org.schacchi.server.AccountManager(null, 1000);
+
+        manager.register("MarioRossi", "password123");
+        manager.register("LuigiVerdi", "password123");
+        assertTrue(manager.addFriend("MarioRossi", "LuigiVerdi"), "L'amicizia deve essere creata");
+
+        assertTrue(manager.deleteAccount("LuigiVerdi"));
+        assertFalse(manager.hasFriend("MarioRossi", "LuigiVerdi"),
+                "Il riferimento all'utente cancellato deve sparire dalla lista amici altrui");
+    }
+
+    @Test
+    @DisplayName("La registrazione sotto i 13 anni è rifiutata")
+    void registrationUnder13IsRejected() throws IOException {
+        TestClient client = connect();
+        client.await("CONNECTED");
+        client.send("REGISTER Bambino " + PW + " 10");
+        client.awaitErrorContaining("almeno 13 anni");
+    }
+
+    @Test
+    @DisplayName("Tra 13 e 15 anni l'avviso sul consenso genitoriale viene inviato")
+    void minorRegistrationGetsParentalConsentNotice() throws IOException {
+        TestClient client = connect();
+        client.await("CONNECTED");
+        client.send("REGISTER Ragazzo " + PW + " 14");
+        String ok = client.await("REGISTER_OK Ragazzo");
+        assertTrue(ok.contains("genitore"),
+                "Sotto i 16 anni deve essere avvisato del consenso genitoriale, ottenuto: " + ok);
+    }
+
+    @Test
+    @DisplayName("Da 16 anni nessun avviso sul consenso genitoriale")
+    void adultRegistrationHasNoParentalNotice() throws IOException {
+        TestClient client = connect();
+        client.await("CONNECTED");
+        client.send("REGISTER Adulto " + PW + " 20");
+        String ok = client.await("REGISTER_OK Adulto");
+        assertFalse(ok.contains("genitore"),
+                "Un adulto non deve ricevere l'avviso sui minori, ottenuto: " + ok);
+    }
+
+    @Test
+    @DisplayName("Il file account non contiene la password in chiaro né tracce deboli")
+    void accountsFileDoesNotStorePlaintextPasswords() throws IOException {
+        TestClient client = connect();
+        client.await("CONNECTED");
+        client.send("REGISTER sicuro " + PW);
+        assertNotNull(client.await("REGISTER_OK sicuro"));
+
+        String content = Files.readString(accountsFile);
+        assertFalse(content.contains(PW), "La password non deve mai essere scritta in chiaro su disco");
+
+        // Formato: username:salt:iterazioni:hash:w:l:d:elo:eta:amici
+        // split con limite -1: altrimenti il campo "amici" vuoto verrebbe perso
+        String[] fields = content.trim().split(":", -1);
+        assertEquals(10, fields.length, "Formato della riga account non atteso: " + content.trim());
+        assertEquals("sicuro", fields[0]);
+        assertEquals(32, fields[1].length(), "Il sale deve essere di 16 byte in esadecimale");
+
+        int iterations = Integer.parseInt(fields[2]);
+        assertTrue(iterations >= 100_000,
+                "Il fattore di lavoro PBKDF2 deve essere alto, ottenuto: " + iterations);
+        assertEquals(64, fields[3].length(), "La traccia PBKDF2-SHA256 deve essere di 32 byte in esadecimale");
+    }
+    /**
      * Client di test minimale: invia righe di comando e raccoglie le risposte.
      */
     private static class TestClient implements AutoCloseable {
@@ -119,6 +266,37 @@ public class ChessServerIntegrationTest {
 
         boolean sawMessageStartingWith(String prefix) {
             return received.stream().anyMatch(m -> m.startsWith(prefix));
+        }
+
+        /** @return quanti messaggi iniziati con il prefisso sono arrivati finora */
+        int countMessages(String prefix) {
+            return (int) received.stream().filter(m -> m.startsWith(prefix)).count();
+        }
+
+        /** Attende che i messaggi col prefisso siano almeno {@code atLeast}. */
+        void awaitCount(String prefix, int atLeast) {
+            long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+            while (System.currentTimeMillis() < deadline) {
+                if (countMessages(prefix) >= atLeast) return;
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    fail("Test interrotto");
+                }
+            }
+            fail("Timeout in attesa di almeno " + atLeast + " messaggi \"" + prefix
+                    + "\", arrivati " + countMessages(prefix) + ". Ricevuti: " + received);
+        }
+
+        /** @return l'ennesimo messaggio che inizia con il prefisso (1-based) */
+        String nthMessage(String prefix, int n) {
+            List<String> matching = received.stream().filter(m -> m.startsWith(prefix)).toList();
+            if (matching.size() < n) {
+                fail("Attesi " + n + " messaggi \"" + prefix + "\", trovati " + matching.size()
+                        + ". Ricevuti: " + received);
+            }
+            return matching.get(n - 1);
         }
 
         boolean sawErrorContaining(String text) {
@@ -290,9 +468,9 @@ public class ChessServerIntegrationTest {
         black.await("NAME_CHANGED Winner");
 
         // Registrazione di entrambi gli account
-        white.send("REGISTER Resigner pw123");
+        white.send("REGISTER Resigner password123");
         assertNotNull(white.await("REGISTER_OK Resigner"));
-        black.send("REGISTER Winner pw123");
+        black.send("REGISTER Winner password123");
         assertNotNull(black.await("REGISTER_OK Winner"));
 
         white.send("CREATE Sala");
@@ -334,7 +512,7 @@ public class ChessServerIntegrationTest {
         white.await("NAME_CHANGED quitter");
         black.await("NAME_CHANGED rester");
 
-        black.send("REGISTER rester pw123");
+        black.send("REGISTER rester password123");
         assertNotNull(black.await("REGISTER_OK rester"));
 
         white.send("CREATE Sala");
@@ -564,21 +742,21 @@ public class ChessServerIntegrationTest {
         TestClient client = connect();
         client.await("CONNECTED");
 
-        client.send("REGISTER tester pw123");
+        client.send("REGISTER tester password123");
         assertNotNull(client.await("REGISTER_OK tester"));
 
         // Username duplicato
         TestClient other = connect();
         other.await("CONNECTED");
-        other.send("REGISTER tester pw123");
+        other.send("REGISTER tester password123");
         assertNotNull(other.await("ERROR"), "La registrazione duplicata deve fallire");
 
         // Password errata
-        client.send("LOGIN tester sbagliata");
+        client.send("LOGIN tester wrongpass123");
         assertNotNull(client.await("ERROR"), "La password errata deve essere rifiutata");
 
         // Password corretta
-        client.send("LOGIN tester pw123");
+        client.send("LOGIN tester password123");
         String loginOk = client.await("LOGIN_OK tester");
         assertTrue(loginOk.contains("ELO:1200"), "L'ELO iniziale deve essere 1200, ottenuto: " + loginOk);
     }
@@ -618,22 +796,121 @@ public class ChessServerIntegrationTest {
     }
 
     @Test
-    @DisplayName("Il file account non contiene password in chiaro")
-    void accountsFileDoesNotStorePlaintextPasswords() throws IOException {
+    @DisplayName("HELP elenca tutti i comandi implementati")
+    void helpListsEveryCommand() throws IOException {
         TestClient client = connect();
         client.await("CONNECTED");
-        client.send("REGISTER sicuro password123");
-        assertNotNull(client.await("REGISTER_OK sicuro"));
-
-        String content = Files.readString(accountsFile);
-        assertFalse(content.contains("password123"), "La password non deve mai essere scritta in chiaro su disco");
-        assertTrue(content.contains("sicuro"), "Il nome utente deve essere salvato");
-        // formato: username:salt:hash:w:l:d:elo:amici
-        // split con limite -1: altrimenti il campo "amici" vuoto verrebbe perso
-        String[] fields = content.trim().split(":", -1);
-        assertEquals(8, fields.length, "Il formato della riga account non è quello atteso: " + content.trim());
-        assertEquals("sicuro", fields[0]);
-        assertEquals(32, fields[1].length(), "Il sale deve essere di 16 byte in esadecimale");
-        assertEquals(64, fields[2].length(), "La traccia SHA-256 deve essere di 32 byte in esadecimale");
+        String help = client.await("HELP");
+        // I comandi che la vecchia lista ometteva
+        for (String cmd : new String[]{"LOGIN", "REGISTER", "STATS", "FRIENDS", "FRIEND_ADD", "PING", "NAME"}) {
+            assertTrue(help.contains(cmd), "HELP deve menzionare " + cmd + ", ottenuto: " + help);
+        }
+        // E quelli gia' presenti, per non aver perso nulla
+        for (String cmd : new String[]{"CREATE", "JOIN", "MOVE", "RESIGN", "DRAW_OFFER", "DRAW_ACCEPT",
+                "DRAW_DECLINE", "CHAT", "BOARD", "LEAVE", "QUIT"}) {
+            assertTrue(help.contains(cmd), "HELP deve menzionare " + cmd + ", ottenuto: " + help);
+        }
     }
+
+    @Test
+    @DisplayName("Connessioni oltre il tetto vengono rifiutate")
+    void connectionLimitIsEnforced() throws IOException, InterruptedException {
+        int limit = 3;
+        // Tetto basso per poterlo verificare davvero senza aprire 200 socket
+        Server limited = Server.installInstance(new Server(0, accountsFile.toString(), limit));
+        limited.startAsync();
+        long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+        while (limited.getPort() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        try {
+            assertEquals(limit, limited.getMaxClients());
+            assertTrue(limited.isRunning());
+
+            List<TestClient> accepted = new ArrayList<>();
+            for (int i = 0; i < limit; i++) {
+                TestClient c = new TestClient(limited.getPort());
+                clients.add(c);
+                c.await("CONNECTED");
+                accepted.add(c);
+            }
+            long waitDeadline = System.currentTimeMillis() + TIMEOUT_MS;
+            while (limited.getConnectedClients().size() < limit && System.currentTimeMillis() < waitDeadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(limit, limited.getConnectedClients().size());
+
+            // La successiva viene rifiutata con un motivo leggibile
+            try (Socket extra = new Socket("127.0.0.1", limited.getPort())) {
+                extra.setSoTimeout((int) TIMEOUT_MS);
+                BufferedReader in = new BufferedReader(new InputStreamReader(extra.getInputStream()));
+                String line = in.readLine();
+                assertNotNull(line, "Il server deve rispondere prima di chiudere");
+                assertTrue(line.startsWith("ERROR"), "Il rifiuto deve essere un ERROR, ottenuto: " + line);
+                assertTrue(line.contains("limite"), "Il messaggio deve spiegare il motivo, ottenuto: " + line);
+            }
+
+            // Il tetto non blocca le connessioni già accettate
+            accepted.get(0).send("PING");
+            assertEquals("PONG", accepted.get(0).await("PONG"));
+        } finally {
+            limited.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("Un nome gia' in uso non puo' essere preso da un secondo client")
+    void duplicateOnlineNameIsRejected() throws IOException {
+        TestClient first = connect();
+        TestClient second = connect();
+        first.await("CONNECTED");
+        second.await("CONNECTED");
+
+        first.send("NAME GiocatoreUnico");
+        assertTrue(first.await("NAME_CHANGED GiocatoreUnico").startsWith("NAME_CHANGED"));
+
+        // Il secondo client non puo' rubare il nome
+        second.send("NAME giocatoreunico");
+        second.awaitErrorContaining("gia' in uso");
+
+        // E non puo' nemmeno fare login con l'account corrispondente
+        first.send("REGISTER giocatoreunico password123");
+        first.await("REGISTER_OK");
+        second.send("LOGIN giocatoreunico password123");
+        second.awaitErrorContaining("gia' collegato");
+
+        // Un nome libero invece funziona
+        second.send("NAME AltroNome");
+        assertTrue(second.await("NAME_CHANGED AltroNome").startsWith("NAME_CHANGED"));
+    }
+
+    @Test
+    @DisplayName("Uno spettatore riceve lo storico delle mosse gia' giocate")
+    void spectatorReceivesMoveHistory() throws IOException {
+        TestClient white = connect();
+        TestClient black = connect();
+        TestClient third = connect();
+        white.await("CONNECTED");
+        black.await("CONNECTED");
+        third.await("CONNECTED");
+
+        white.send("CREATE Sala");
+        String roomId = white.await("ROOM_CREATED").split("\\s+")[1];
+        black.send("JOIN " + roomId);
+        white.await("GAME_START");
+        black.await("GAME_START");
+
+        for (String uci : new String[]{"e2e4", "e7e5", "g1f3"}) {
+            TestClient mover = uci.equals("e7e5") ? black : white;
+            mover.send("MOVE " + uci);
+            mover.await("MOVE_OK " + uci);
+        }
+
+        third.send("JOIN " + roomId);
+        third.await("SPECTATING " + roomId);
+        String history = third.await("MOVE_HISTORY");
+        assertTrue(history.startsWith("MOVE_HISTORY e2e4 e7e5 g1f3"),
+                "Lo spettatore deve ricevere tutte le mosse precedenti, ottenuto: " + history);
+    }
+
 }

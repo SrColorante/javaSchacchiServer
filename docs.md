@@ -118,7 +118,13 @@ Test che copre la trappola: `repetitionNotPollutedBySimulation`.
 | `isStalemate()` | Re non in scacco e nessuna mossa legale |
 | `isInsufficientMaterial()` | Re/Re, Re+1 minore, Re+2 cavalli, soli alfieri stesso colore |
 | `isFiftyMoveDraw()` | `halfmoveClock >= 100` |
+| `isSeventyFiveMoveDraw()` | `halfmoveClock >= 150` |
 | `isThreefoldRepetition()` | Chiave di posizione vista ≥ 3 volte |
+| `isFivefoldRepetition()` | Chiave di posizione vista ≥ 5 volte |
+
+Tripla e quintuple sono entrambe trattate come patta **automatica**. La quintuple lo è
+per norma (art. 9.2.2 FIDE); la tripla no (è un *claim*) ed è una scelta di progetto,
+dichiarata nei limiti noti.
 
 `halfmoveClock` era già calcolato dal motore originale ma **non veniva mai usato**:
 era il pezzo mancante più evidente.
@@ -126,7 +132,8 @@ era il pezzo mancante più evidente.
 ### Precedenza a `GameSession`
 
 ```
-scacco matto  →  stallo  →  { materiale insufficiente, 50 mosse, ripetizione }  →  scacco
+scacco matto  →  stallo  →  materiale insufficiente  →  75 mosse  →  50 mosse
+              →  quintuple  →  tripla  →  scacco
 ```
 
 Lo scacco matto viene **prima** delle patte automatiche per un motivo preciso: un
@@ -162,17 +169,20 @@ passava come legale.
 TCP in chiaro, righe separate da `\n`, `CMD argomento` separati da spazi. Nessun
 handshake, nessuna versione, nessun request id, nessun codice di errore numerico.
 
-**20 casi di comando** in `ConnectionHandler.handleCommand`, che diventano **21 comandi**
-perché `PLAY`, `QUICKMATCH` e `MATCH` condividono lo stesso handler, e così
-`BOARD`/`FEN` e `QUIT`/`EXIT`:
+**24 casi di comando** in `ConnectionHandler.handleCommand`, che diventano **28 comandi**
+perché alcuni casi condividono lo stesso handler (`PLAY`/`QUICKMATCH`/`MATCH`,
+`BOARD`/`FEN`, `QUIT`/`EXIT`):
 
-`REGISTER` · `LOGIN` · `FRIEND_ADD` · `FRIENDS` · `STATS` · `NAME` · `CREATE` ·
-`JOIN` · `PLAY`/`QUICKMATCH`/`MATCH` · `LIST` · `MOVE` · `RESIGN` · `DRAW_OFFER` ·
-`DRAW_ACCEPT` · `DRAW_DECLINE` · `CHAT` · `BOARD`/`FEN` · `LEAVE` · `PING` · `QUIT`/`EXIT`
+`REGISTER` · `LOGIN` · `LOGOUT` · `EXPORT_DATA` · `DELETE_ACCOUNT` · `FRIEND_ADD` ·
+`FRIENDS` · `STATS` · `NAME` · `CREATE` · `JOIN` · `PLAY`/`QUICKMATCH`/`MATCH` ·
+`LIST` · `MOVE` · `RESIGN` · `DRAW_OFFER` · `DRAW_ACCEPT` · `DRAW_DECLINE` ·
+`CHAT` · `BOARD`/`FEN` · `LEAVE` · `HELP` · `PING` · `QUIT`/`EXIT`
 
-**30 messaggi** dal server, di cui `ClientNetwork.handleServerLine` ne tratta 26.
-I non trattati sono `HELP`, `PONG`, `SERVER_SHUTDOWN` e `INFO` dei canali non
-interattivi: il client li ignora (vedi i limiti noti nel README).
+**36 messaggi** dal server. `ClientNetwork.handleServerLine` ne tratta 33 casi; i tre
+restanti sono `FRIEND_ADDED` (trattato, ma in un blocco con `FRIENDS`), `STATS` e
+`SERVER_SHUTDOWN`, che arrivano come `INFO`/`ERROR` o non hanno bisogno di azione nel
+client. `HELP` viene scritto su console senza popup: arriva due volte (all'avvio e su
+richiesta esplicita) e un dialog all'avvio coprirebbe la schermata di login.
 
 ### Il FEN è l'unica rappresentazione autorevole sul filo
 
@@ -229,20 +239,21 @@ un server che non si arresta.
 
 ## 7. Persistenza degli account
 
-`accounts.txt`, risolto rispetto alla **directory di lavoro corrente**. Otto campi
+`accounts.txt`, risolto rispetto alla **directory di lavoro corrente**. Dieci campi
 separati da `:`:
 
 ```
-username:salt:hash:w:l:d:elo:friends
+username:salt:iterazioni:hash:w:l:d:elo:eta:friends
 ```
 
 - `salt` — 16 byte da `SecureRandom`, esadecimale
-- `hash` — SHA-256 di `salt + ":" + password`
+- `iterazioni` — fattore di lavoro PBKDF2 (default `600000`, minimo `1000`)
+- `hash` — **PBKDF2-HMAC-SHA256** di `salt + ":" + password`
 - confronto in **tempo costante** (`MessageDigest.isEqual`); il tempo di risposta non
   distingue "utente inesistente" da "password errata"
 - scrittura **atomica**: `accounts.txt.tmp` e poi `Files.move(…, REPLACE_EXISTING)`,
   così un crash a metà scrittura non corrompe il file
-- righe con meno di 7 campi vengono **saltate**: gli account con password in chiaro
+- righe con meno di 8 campi vengono **saltate**: gli account con password in chiaro
   non vengono migrati (scelta deliberata, non un oversight)
 - ELO: `+15` alla vittoria, `max(100, elo - 15)` alla sconfitta, invariato alla patta.
   Default 1200. **Non è la formula FIDE.**
@@ -250,15 +261,31 @@ username:salt:hash:w:l:d:elo:friends
 I contatori sono `volatile`: vengono letti dai thread dei client (comandi `STATS` e
 `LOGIN_OK`) senza passare dal lock del manager, che protegge solo la mutazione.
 
+### Perché PBKDF2 e non SHA-256
+
+La prima versione del progetto derivava la password con un singolo SHA-256 di
+`salt:password`. Un SHA-256 costa nanosecondi: chi legge `accounts.txt` può provare
+miliardi di candidati al secondo con una GPU, e le password diventano praticamente
+illeggibili.
+
+PBKDF2 applica centinaia di migliaia di iterazioni di HMAC, rendendo ogni tentativo
+~100 ms: con lo stesso hardware servono mesi anziché minuti. È il valore raccomandato
+da OWASP per PBKDF2-HMAC-SHA256, e risponde all'obbligo dell'art. 32 GDPR di adottare
+misure tecniche adeguate al rischio.
+
+Il fattore di lavoro è salvato **per account** nel file: alzarlo in futuro non invalida
+gli account esistenti, perché la verifica usa le iterazioni registrate accanto alla
+traccia.
+
 ## 8. Test
 
-`mvn test` — 69 test su 4 classi, nessuno richiede un display.
+`mvn test` — 80 test su 4 classi, nessuno richiede un display.
 
 | Classe | Test | Che cosa dimostra |
 |---|---:|---|
 | `ChessBoardTest` | 40 | Perft, regole speciali, FEN, patte, indipendenza della copia |
-| `ChessServerIntegrationTest` | 14 | Due o tre client reali su socket: partita fino a scacco matto, mosse rifiutate, resa, forfeit, patta, stallo, matchmaking, spettatore, chat, login, `accounts.txt` senza password in chiaro |
-| `GameSessionDrawTest` | 8 | Le tre patte automatiche e la precedenza del matto sullo stallo |
+| `ChessServerIntegrationTest` | 25 | Due o tre client reali su socket: partita fino a scacco matto, mosse rifiutate, resa, forfeit, patta, stallo, matchmaking, spettatore, chat, login, diritti GDPR (accesso, cancellazione, età), tetto di connessioni, `HELP` |
+| `GameSessionDrawTest` | 8 | Le cinque patte automatiche e la precedenza del matto sullo stallo |
 | `ChessServerTest` | 7 | Smoke test originali, pre-JUnit (ha ancora un `main`) |
 
 ### Come sono costruiti i test di integrazione
@@ -287,7 +314,70 @@ public GameSession(String sessionId, String roomName, ConnectionHandler host, St
 le regole altrimenti irraggiungibili. Le mosse vengono iniettate chiamando
 `processMove`, esattamente come fa `handleCommand` quando arriva un `MOVE`.
 
-## 9. Note su scelte non ovvie
+## 9. Il secondo deadlock: l'ordine di chiusura
+
+Il primo deadlock (inversione di lock fra `Server`, `ConnectionHandler` e
+`GameSession`) è documentato in §6. Il secondo è stato trovato dopo, quando è stato
+aggiunto il tetto di connessioni: senza quel test, i test precedenti non lo avrebbero
+messo in evidenza, perché i client di test chiudevano il proprio socket **prima** che il
+server richiamasse `close()`.
+
+```java
+// PRIMA: deadlock garantito
+in.close();          // BufferedReader.close() attende il lock interno
+out.close();
+clientSocket.close();
+
+// DOPO: corretto
+clientSocket.close(); // readLine() riceve EOF e rilascia il lock
+out.close();
+```
+
+`BufferedReader.close()` acquisisce il lock che `readLine()` tiene per tutta la durata
+della lettura bloccata. Il thread di lettura è fermo in `readLine()` in attesa di dati
+che arriveranno solo se il socket resta aperto, ma il socket viene chiuso **dopo**.
+Ciascuno dei due attende un evento che solo l'altro può provocare: `close()` aspetta
+il lettore, il lettore aspetta `close()`.
+
+La correzione è chiudere **prima il socket**: `readLine()` riceve subito EOF, il
+thread lettore termina e rilascia il lock. Gli stream si chiudono dopo, e `in` non
+viene più chiuso esplicitamente perché lo usa solo il thread di lettura.
+
+Il thread dump che ha reso il problema evidente:
+
+```
+"main" ... waiting on condition
+  at java.io.BufferedReader.close(BufferedReader.java:619)
+  at org.schacchi.server.ConnectionHandler.close(ConnectionHandler.java:411)
+  at org.schacchi.server.Server.stop(Server.java:250)
+```
+
+## 10. Privacy e GDPR
+
+Riepilogo; il documento completo è in [`docs/privacy.md`](./docs/privacy.md).
+
+| Richiesta | Implementazione |
+|---|---|
+| art. 17 — cancellazione | `DELETE_ACCOUNT <password>`; rimuove anche i riferimenti residui nelle liste amici altrui |
+| art. 15, 20 — accesso e portabilità | `EXPORT_DATA`; esclude la traccia della password, che non è dato dell'interessato |
+| art. 8 — minori | età dichiarata alla registrazione; sotto i 13 rifiutata, 13-15 avviso sul consenso genitoriale |
+| art. 32 — sicurezza | PBKDF2-HMAC-SHA256 600k, sale per utente, confronto costante, scrittura atomica, tetto connessioni, timeout socket |
+| minimizzazione | **IP non scritti nei log**; chat non conservata su disco |
+
+**Non conforme.** Restano: traffico TCP in chiaro, `accounts.txt` non cifrato a riposo,
+informativa privacy non compilata, nessuna procedura di notifica breach, età non
+verificata.
+
+### Perché la cancellazione deve ripulire le liste amici altrui
+
+Cancellare l'account ma lasciare il nome nelle liste amici degli altri significa che il
+nome dell'interessato cancellato **sopravvive nei dati di altri interessati**: è esattamente
+ciò che l'art. 17 vieta. Il confronto usa `equalsIgnoreCase`, perché gli account sono
+indicizzati per chiave minuscola mentre le liste amici conservano le maiuscole originali.
+Con `equals` secco il riferimento residuo sopravviveva, ed è un bug che il test
+`deleteRemovesResidualFriendReference` copre.
+
+## 11. Note su scelte non ovvie
 
 **Perché `Position` ha una cache 8×8.** Le caselle sono oggetti piccoli e usati ovunque,
 in particolare dentro i cicli di generazione mosse e di perft. 64 istanti condivise
@@ -305,7 +395,18 @@ abbandono e patta concordata non chiamavano `recordResult`: l'ELO si muoveva sol
 scacco matto e stallo. I test `resignationUpdatesStats` e
 `disconnectForfeitsAndRecordsResult` esistono per coprire esattamente quel buco.
 
-**Perché la coda di matchmaking viene ripulita in `CREATE`.** Senza, un client che
+**Perché la coda di matchmaking viene ripulita in `CREATE`
 aveva fatto `PLAY` e poi `CREATE` restava in coda: poteva essere abbinato a un
 avversario mentre ospitava già una stanza, finendo con lo stesso client in due
 partite. `removeFromMatchmaking(this)` in `CREATE` e in `JOIN` chiude la via.
+
+**Perché il tetto di connessioni è esplicito e non una coda.** Oltre la soglia il
+server risponde `ERROR Server al limite di connessioni contemporanee. Riprova piu' tardi.`
+e chiude il socket. Accodare avrebbe significato accettare la connessione e tenerla
+in attesa, cioè allocare un thread per un client che ancora non può giocare: il tetto
+smetterebbe di proteggere la risorsa che vuole proteggere.
+
+**Perché la password minima è 8 caratteri.** Non è una scelta di sicurezza ma di
+compatibilità con le raccomandazioni attuali: sotto gli 8 caratteri la password è
+abbastanza corta da essere indovinata anche con PBKDF2, perché il costo del login
+dell'attaccante cresce molto più lentamente del numero di candidati da provare.

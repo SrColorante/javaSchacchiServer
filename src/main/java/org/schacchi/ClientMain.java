@@ -92,9 +92,48 @@ public class ClientMain extends JFrame implements ClientListener {
     public void onLoginSuccess(String username, int elo, int wins, int losses, int draws) {
         SwingUtilities.invokeLater(() -> {
             lobbyPanel.updateUserInfo(username, elo, wins, losses, draws);
+            // Con un account attivo diventano disponibili i diritti GDPR
+            lobbyPanel.setAccountActionsEnabled(true);
             showCard(CARD_LOBBY);
             network.refreshRooms();
             network.refreshFriends();
+        });
+    }
+
+    @Override
+    public void onDataExported(String line) {
+        SwingUtilities.invokeLater(() -> lobbyPanel.appendDataLine(line));
+    }
+
+    @Override
+    public void onDataExportComplete(String summary) {
+        SwingUtilities.invokeLater(() -> lobbyPanel.setPrivacyStatus(summary));
+    }
+
+    @Override
+    public void onDataExportEmpty(String info) {
+        SwingUtilities.invokeLater(() -> {
+            lobbyPanel.setDataAreaText(info);
+            lobbyPanel.setPrivacyStatus("Sei un ospite: il server non conserva dati su di te.");
+        });
+    }
+
+    @Override
+    public void onAccountDeleted(String message) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, message,
+                    "Account cancellato", JOptionPane.INFORMATION_MESSAGE);
+            lobbyPanel.setDataAreaText("Account cancellato.\nI dati sono stati rimossi dal server.");
+            lobbyPanel.setPrivacyStatus("Ora sei un ospite.");
+            lobbyPanel.setAccountActionsEnabled(false);
+        });
+    }
+
+    @Override
+    public void onLogoutSuccess() {
+        SwingUtilities.invokeLater(() -> {
+            lobbyPanel.setPrivacyStatus("Sei ora un ospite. L'account non è più in uso.");
+            lobbyPanel.setAccountActionsEnabled(false);
         });
     }
 
@@ -157,6 +196,11 @@ public class ClientMain extends JFrame implements ClientListener {
     }
 
     @Override
+    public void onMoveHistoryReceived(List<String> moves) {
+        SwingUtilities.invokeLater(() -> gameViewPanel.onMoveHistoryReceived(moves));
+    }
+
+    @Override
     public void onRoomListUpdated(List<RoomInfo> rooms) {
         SwingUtilities.invokeLater(() -> lobbyPanel.updateRoomList(rooms));
     }
@@ -207,10 +251,47 @@ public class ClientMain extends JFrame implements ClientListener {
     @Override
     public void onInfo(String infoMessage) {
         SwingUtilities.invokeLater(() -> {
-            if (gameViewPanel != null && cardsPanel.getComponent(2).isVisible()) {
+            if (isGameViewVisible()) {
                 gameViewPanel.appendChat("[INFO]: " + infoMessage);
+            } else {
+                loginPanel.setStatusMessage(infoMessage, false);
             }
         });
+    }
+
+    @Override
+    public void onPong() {
+        SwingUtilities.invokeLater(() -> loginPanel.setStatusMessage("Server raggiungibile.", false));
+    }
+
+    @Override
+    public void onHelp(String helpText) {
+        // Il testo di aiuto arriva due volte: all'avvio e a richiesta esplicita.
+        // Non viene mostrato in un popup all'avvio per non coprire la schermata di login.
+        if (helpText != null && helpText.length() > 0) {
+            System.out.println("[SERVER HELP] " + helpText);
+        }
+    }
+
+    @Override
+    public void onServerShutdown(String reason) {
+        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this,
+                "Il server è stato arrestato.\nRiavvia il server e poi riconnettiti.",
+                "Server non disponibile", JOptionPane.WARNING_MESSAGE));
+    }
+
+    /**
+     * @return true se il pannello di gioco è la schermata attualmente visibile
+     */
+    private boolean isGameViewVisible() {
+        for (java.awt.Component component : cardsPanel.getComponents()) {
+            if (component == gameViewPanel) {
+                // In una CardLayout solo il card attivo è visibile: è sufficiente
+                // controllarlo, senza interrogare la CardLayout su quale sia.
+                return component.isVisible();
+            }
+        }
+        return false;
     }
 
     public static void main(String[] args) {

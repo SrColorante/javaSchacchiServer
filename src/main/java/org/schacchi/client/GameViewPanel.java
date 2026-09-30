@@ -256,6 +256,31 @@ public class GameViewPanel extends JPanel {
     }
 
     /**
+     * Mostra lo storico delle mosse inviate dal server a uno spettatore che entra
+     * a meta' partita: senza, la scacchiera mostrerebbe i pezzi gia' spostati senza
+     * alcuna traccia di come ci si e' arrivati.
+     */
+    public void onMoveHistoryReceived(java.util.List<String> moves) {
+        if (moves == null || moves.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        int moveNumber = 1;
+        for (String uci : moves) {
+            if (moveNumber % 2 == 1) {
+                sb.append(moveNumber).append(". ");
+            }
+            sb.append(uci).append("  ");
+            if (moveNumber % 2 == 0) {
+                sb.append('\n');
+            }
+            moveNumber++;
+        }
+        if (moveNumber % 2 == 1) {
+            sb.append('\n');
+        }
+        moveHistoryArea.setText(sb.toString());
+    }
+
+    /**
      * Risincronizza la scacchiera sulla posizione FEN autorevole del server.
      * Il client non riapplica le mosse in locale: se per qualsiasi motivo il suo stato
      * divergesse da quello del server, ricalcolerebbe mosse diverse da quelle reali.

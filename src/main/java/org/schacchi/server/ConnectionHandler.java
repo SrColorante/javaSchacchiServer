@@ -19,6 +19,37 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ConnectionHandler implements Runnable {
     private static final AtomicInteger CLIENT_COUNTER = new AtomicInteger(1);
 
+    /**
+     * Testo di aiuto inviato all'avvio con il comando {@code HELP}.
+     * Elenca tutti i comandi effettivamente implementati: la lista precedente ometteva
+     * REGISTER, LOGIN, STATS, FRIENDS, FRIEND_ADD e PING.
+     */
+    private static final String HELP_TEXT = String.join(
+            " | ",
+            "LOGIN <utente> <password>",
+            "REGISTER <utente> <password> [eta]",
+            "LOGOUT",
+            "STATS",
+            "NAME <nome>",
+            "FRIENDS",
+            "FRIEND_ADD <utente>",
+            "CREATE [nomeStanza]",
+            "JOIN <idStanza>",
+            "PLAY (matchmaking)",
+            "LIST",
+            "MOVE <uci> (es. e2e4, e7e8q)",
+            "BOARD (FEN)",
+            "CHAT <messaggio>",
+            "DRAW_OFFER",
+            "DRAW_ACCEPT",
+            "DRAW_DECLINE",
+            "RESIGN",
+            "LEAVE",
+            "EXPORT_DATA (dati personali)",
+            "DELETE_ACCOUNT <password>",
+            "PING",
+            "QUIT");
+
     private final Socket clientSocket;
     private PrintWriter out;
     private BufferedReader in;
@@ -87,6 +118,14 @@ public class ConnectionHandler implements Runnable {
     @Override
     public void run() {
         try {
+            // Timeout di inattivita': senza, una connessione rimasta aperta ma muta
+            // (mezza aperta, rete caduta silenziosamente) occupa per sempre un thread
+            // del pool, che e' a dimensione fissa. Un valore di 0 disabilita il timeout.
+            int timeoutMs = Server.getInstance().getSocketTimeoutMs();
+            if (timeoutMs > 0) {
+                clientSocket.setSoTimeout(timeoutMs);
+            }
+
             out = new PrintWriter(clientSocket.getOutputStream(), true);
             in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
 
@@ -95,7 +134,7 @@ public class ConnectionHandler implements Runnable {
             // Messaggio di benvenuto con specifiche del server e comandi supportati
             sendMessage("CONNECTED Welcome to Chess Server [game.cristianrenosto.party]");
             sendMessage("YOUR_NAME " + username);
-            sendMessage("HELP Comandi disponibili: NAME <nome>, CREATE [stanza], JOIN <id>, PLAY, LIST, MOVE <uci>, RESIGN, DRAW_OFFER, DRAW_ACCEPT, DRAW_DECLINE, CHAT <msg>, BOARD, LEAVE, QUIT");
+            sendMessage("HELP " + HELP_TEXT);
 
             String inputLine;
             while (running && (inputLine = in.readLine()) != null) {
@@ -117,18 +156,61 @@ public class ConnectionHandler implements Runnable {
 
         switch (command) {
             case "REGISTER" -> {
+                // Sintassi: REGISTER <utente> <password> [età]
+                // L'età è opzionale ma, se dichiarata, viene verificata contro l'art. 8 GDPR.
                 String[] creds = argument.split("\\s+");
                 if (creds.length >= 2) {
-                    boolean ok = Server.getInstance().getAccountManager().register(creds[0], creds[1]);
+                    int declaredAge = 0;
+                    if (creds.length >= 3) {
+                        try {
+                            declaredAge = Integer.parseInt(creds[2]);
+                        } catch (NumberFormatException e) {
+                            sendMessage("ERROR Età non valida: deve essere un numero intero.");
+                            return;
+                        }
+                    }
+                    if (declaredAge != 0 && declaredAge < AccountManager.MIN_ALLOWED_AGE) {
+                        sendMessage("ERROR Registrazione non consentita: il servizio è riservato a chi ha almeno "
+                                + AccountManager.MIN_ALLOWED_AGE + " anni.");
+                        return;
+                    }
+                    boolean ok = Server.getInstance().getAccountManager()
+                            .register(creds[0], creds[1], declaredAge);
                     if (ok) {
-                        this.username = creds[0];
-                        sendMessage("REGISTER_OK " + this.username);
+                        // Solo ora il nome diventa proprio: registrarlo prima dell'OK
+                        // esporrebbe gli altri client a un nome che potrebbe non essere
+                        // stato assegnato.
+                        this.username = Server.getInstance().getAccountManager()
+                                .getAccount(creds[0]).getUsername();
+                        // Sotto i 16 anni il consenso deve essere autorizzato da un genitore:
+                        // l'avviso rende esplicito il punto senza impedire la registrazione,
+                        // che per l'art. 8 è lecita con autorizzazione del titolare della
+                        // responsabilità genitoriale.
+                        String notice = AccountManager.isSelfConsentingAge(declaredAge)
+                                ? ""
+                                : " Attenzione: con eta' dichiarata inferiore a "
+                                    + AccountManager.MIN_SELF_CONSENT_AGE
+                                    + " anni l'uso e' subordinato al consenso di un genitore.";
+                        sendMessage("REGISTER_OK " + this.username + notice);
                         Server.getInstance().log("Nuovo account registrato: " + this.username);
+                    } else if (Server.getInstance().getAccountManager().isUsernameTaken(creds[0])) {
+                        sendMessage("ERROR Username gia' registrato. Scegline un altro o accedi con LOGIN.");
                     } else {
-                        sendMessage("ERROR Registrazione fallita. Username gia' esistente o password troppo corta (min 3 caratteri).");
+                        sendMessage("ERROR Registrazione fallita. Username minimo 3 caratteri, password minimo 8.");
                     }
                 } else {
-                    sendMessage("ERROR Sintassi errata: REGISTER <username> <password>");
+                    sendMessage("ERROR Sintassi errata: REGISTER <username> <password> [eta]");
+                }
+            }
+
+            case "LOGOUT" -> {
+                // Consente di uscire da un account restando collegati: senza questo,
+                // l'unico modo per non avere più l'identità in uso era chiudere il socket.
+                if (Server.getInstance().getAccountManager().getAccount(this.username) != null) {
+                    this.username = "Guest_" + CLIENT_COUNTER.getAndIncrement();
+                    sendMessage("LOGOUT_OK Sei ora un ospite: l'account non è più in uso su questa connessione.");
+                } else {
+                    sendMessage("INFO Sei già un ospite: nessun account da chiudere.");
                 }
             }
 
@@ -136,7 +218,12 @@ public class ConnectionHandler implements Runnable {
                 String[] creds = argument.split("\\s+");
                 if (creds.length >= 2) {
                     AccountManager.Account acc = Server.getInstance().getAccountManager().authenticate(creds[0], creds[1]);
-                    if (acc != null) {
+                    if (acc != null && Server.getInstance().isUsernameInUse(acc.getUsername(), this)) {
+                        // Un account gia' in uso su un'altra connessione non puo' giocare:
+                        // altrimenti i risultati andrebbero a un'identita' condivisa.
+                        sendMessage("ERROR L'account \"" + acc.getUsername()
+                                + "\" e' gia' collegato da un'altra sessione. Esci da quella o usa un altro account.");
+                    } else if (acc != null) {
                         this.username = acc.getUsername();
                         sendMessage("LOGIN_OK " + acc.getUsername() + " ELO:" + acc.getElo() + " W:" + acc.getWins() + " L:" + acc.getLosses() + " D:" + acc.getDraws());
                         Server.getInstance().log("Login eseguito: " + this.username);
@@ -185,6 +272,8 @@ public class ConnectionHandler implements Runnable {
                     String clean = argument.replaceAll("[^a-zA-Z0-9_\\-]", "");
                     if (clean.isEmpty()) {
                         sendMessage("ERROR Il nome puo' contenere solo lettere, numeri, '_' e '-'.");
+                    } else if (Server.getInstance().isUsernameInUse(clean, this)) {
+                        sendMessage("ERROR Il nome \"" + clean + "\" e' gia' in uso da un altro giocatore collegato.");
                     } else {
                         String oldName = this.username;
                         this.username = clean;
@@ -316,12 +405,73 @@ public class ConnectionHandler implements Runnable {
                 Server.getInstance().getSessionManager().removeFromMatchmaking(this);
             }
 
+            case "EXPORT_DATA" -> handleExportData(argument);
+
+            case "DELETE_ACCOUNT" -> handleDeleteAccount(argument);
+
             case "PING" -> sendMessage("PONG");
+
+            case "HELP" -> sendMessage("HELP " + HELP_TEXT);
 
             case "QUIT", "EXIT" -> close();
 
             default -> sendMessage("ERROR Comando non riconosciuto: " + command + ". Digita HELP per la lista comandi.");
         }
+    }
+
+    /**
+     * GDPR art. 15 e 20 — diritto di accesso e portabilità: restituisce tutti i
+     * dati personali dell'utente. La traccia della password non viene inclusa:
+     * non è dato dell'interessato, ma segreto tecnico del sistema.
+     */
+    private void handleExportData(String argument) {
+        AccountManager manager = Server.getInstance().getAccountManager();
+        if (manager.getAccount(this.username) == null) {
+            sendMessage("EXPORT_EMPTY Sei un ospite: il server non conserva dati su di te. "
+                    + "Nickname corrente: " + this.username);
+            return;
+        }
+        List<String> lines = manager.exportAccount(this.username);
+        for (String line : lines) {
+            sendMessage("EXPORT_LINE " + line);
+        }
+        sendMessage("EXPORT_END Dati personali disponibili per " + this.username
+                + ". Per la privacy: vedi docs/privacy.md");
+    }
+
+    /**
+     * GDPR art. 17 — diritto di cancellazione. La password viene richiesta per
+     * evitare che una sessione lasciata aperta su un computer condiviso permetta
+     * a un terzo di cancellare l'account altrui.
+     */
+    private void handleDeleteAccount(String argument) {
+        if (argument.isEmpty()) {
+            sendMessage("ERROR Per cancellare l'account devi confermare la password: DELETE_ACCOUNT <password>");
+            return;
+        }
+        AccountManager manager = Server.getInstance().getAccountManager();
+        AccountManager.Account acc = manager.getAccount(this.username);
+        if (acc == null) {
+            sendMessage("INFO Sei un ospite: non ci sono dati da cancellare sul server.");
+            return;
+        }
+        if (manager.authenticate(this.username, argument) == null) {
+            sendMessage("ERROR Password non corretta: account non cancellato.");
+            return;
+        }
+
+        String deletedName = acc.getUsername();
+        if (!manager.deleteAccount(this.username)) {
+            sendMessage("ERROR Cancellazione non riuscita.");
+            return;
+        }
+
+        // La connessione resta valida ma il client non è più identificabile:
+        // il nome generico impedisce che i risultati di partite successive
+        // finiscano su un account appena cancellato.
+        this.username = "Guest_" + CLIENT_COUNTER.getAndIncrement();
+        sendMessage("DELETE_OK Account \"" + deletedName + "\" cancellato: dati, statistiche e amicizie rimossi.");
+        sendMessage("INFO Ora sei un ospite. I risultati delle prossime partite non verranno registrati.");
     }
 
     /**
@@ -356,12 +506,25 @@ public class ConnectionHandler implements Runnable {
 
         Server.getInstance().unregisterClient(this);
 
+        // L'ordine è essenziale: prima il SOCKET, poi lo stream di uscita.
+        // Chiudere il BufferedReader mentre un altro thread è fermo in readLine()
+        // blocca per sempre: readLine() trattiene il lock interno del reader e non
+        // ritorna finché il socket non è chiuso, quindi close() aspetterebbe un evento
+        // che solo close() può provocare. Chiudendo il socket, readLine() riceve EOF
+        // e rilascia il lock.
         try {
-            if (in != null) in.close();
-            if (out != null) out.close();
             if (clientSocket != null && !clientSocket.isClosed()) {
                 clientSocket.close();
             }
-        } catch (IOException ignored) {}
+        } catch (IOException ignored) {
+        }
+
+        try {
+            if (out != null) out.close();
+        } catch (RuntimeException ignored) {
+        }
+
+        // 'in' non viene chiuso qui: lo usa solo il thread di lettura, che termina da
+        // solo alla ricezione di EOF, e chiuderlo richiederebbe di contendere il suo lock.
     }
 }

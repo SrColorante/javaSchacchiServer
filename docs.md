@@ -11,6 +11,12 @@ Un server TCP autoritativo e due client Swing. Il server possiede l'unica copia
 reale della scacchiera e ne applica le regole; i client non arbitrano, si limitano
 a proporre mosse e a disegnare ciò che il server conferma.
 
+Il server è **solo terminale**: nessuna finestra Swing, nessuna dipendenza da un
+display. Log in streaming su stdout e, se stdin è un terminale, una console di
+comandi (`status`, `rooms`, `clients`, `stop`). Sotto systemd o Docker stdin non è
+un terminale e la console non parte: il processo scrive log puliti, che è ciò che
+un service manager si aspetta. Swing esiste solo nel client.
+
 ```
                          ┌──────────────────────────────┐
                          │  Server  (singleton)         │

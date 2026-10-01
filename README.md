@@ -3,7 +3,7 @@
 > Progetto in mostra su **[cristianrenosto.party/projects](https://cristianrenosto.party/projects)**
 
 Server di scacchi online in **Java 17**: motore di regole scritto a mano, server
-TCP e client desktop Swing. Zero dipendenze runtime.
+TCP solo terminale e client desktop Swing. Zero dipendenze runtime.
 
 Tre funzioni distinte:
 
@@ -26,7 +26,7 @@ Target dichiarato: `game.cristianrenosto.party:12345`.
 |---|---|
 | JDK | 17 (compilato con 21) |
 | Maven | con i plugin pinnati in `pom.xml` |
-| Display | Necessario per la dashboard server e per il **client**; il server funziona headless |
+| Display | Solo per il **client**; il server è solo terminale e gira su VPS, container o systemd |
 | Database | Nessuno — gli account stanno in un file di testo |
 
 **Dipendenze: una sola, in scope `test`** — `junit-jupiter` 5.10.0. A runtime non
@@ -35,20 +35,58 @@ framework di logging.
 
 ## Comandi
 
+### Server — solo terminale
+
 ```bash
-mvn compile
-mvn test
-mvn clean package          # -> target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar
+./start.sh                                    # compila se serve e avvia sulla porta 12345
+./start.sh --port 8080                        # porta diversa
+./start.sh --client                           # server + client grafico
+./start.sh --client-only                      # solo client (server già avviato)
 
-# Server (dashboard Swing, oppure console se headless)
 mvn compile exec:java -Dexec.mainClass="org.schacchi.Main"
-PORT=8080 mvn compile exec:java -Dexec.mainClass="org.schacchi.Main"
-java -jar target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar
+java -jar target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar 19002
+```
 
-# Client (richiede un display)
+Il server stampa i log in streaming e, se lo stdin è un terminale, apre una console
+di comandi. Sotto systemd o Docker stdin non è un terminale: il server resta un
+processo con log puliti su stdout, che è ciò che un service manager si aspetta.
+
+```
+  +------------------------------------------------------+
+  |  SCACCHI SERVER   solo terminale                      |
+  |   porta           12345                               |
+  |   connessioni max 200                                 |
+  |   account         accounts.txt                        |
+  |   console         attiva                              |
+  +------------------------------------------------------+
+```
+
+| Argomento | Effetto |
+|---|---|
+| `12345` (numero nudo) | Porta di ascolto |
+| `-p`, `--port <n>` | Idem, in forma esplicita |
+| `--max-clients <n>` | Tetto di connessioni contemporanee |
+| `--accounts <file>` | File degli account |
+| `--no-console` | Solo log, niente console interattiva |
+| `--no-color` | Log senza codici ANSI |
+
+| Comando | Effetto |
+|---|---|
+| `status` | Server, client connessi, partite in corso e in attesa |
+| `rooms` | Stanze con stato e identificativo |
+| `clients` | Client connessi |
+| `clear` | Pulisce il terminale |
+| `stop` | Arresta il server |
+
+### Client
+
+```bash
 mvn compile exec:java -Dexec.mainClass="org.schacchi.ClientMain"
 java -cp target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar org.schacchi.ClientMain
 ```
+
+L'host e la porta si precompilano con `-Dchess.host=…`, con la variabile
+`CHESS_HOST`, o direttamente nel campo SERVER della schermata di login.
 
 ### Variabili d'ambiente
 
@@ -58,19 +96,16 @@ java -cp target/SchacchiServer-1.0-SNAPSHOT-jar-with-dependencies.jar org.schacc
 | `MAX_CLIENTS` | `200` | Tetto di connessioni contemporanee |
 | `SOCKET_TIMEOUT_MS` | `0` (disabilitato) | Timeout di inattività sui socket |
 | `PBKDF2_ITERATIONS` | `600000` | Fattore di lavoro per le password |
+| `NO_COLOR` | — | Se impostata, i log escono senza codici colore |
+| `CHESS_COLOR` | — | `0` forza i log senza colore, `1` li forza con |
 
-
-> **`java -jar … 8080` non funziona.** `Main.main` **ignora `args`**: la porta si
-> imposta solo con la variabile d'ambiente `PORT`. Passare la porta come argomento
-> viene silenziosamente ignorato e il server apre comunque 12345.
->
 > `mvn exec:java` senza `-Dexec.mainClass` non funziona: il plugin ha
 > `org.schacchi.Main` hardcoded.
 
-`Main` rileva automaticamente l'ambiente headless con
-`GraphicsEnvironment.isHeadless()` e salta del tutto Swing su VPS o container,
-restando in console. Il server supporta la porta `0` per i test (il SO assegna
-una porta libera).
+La porta si imposta con `--port`, con un numero come argomento nudo
+(`java -jar … 19002`) o con la variabile d'ambiente `PORT`. In quest'ordine di
+precedenza: gli argomenti vincono sull'ambiente. Il server supporta anche la porta
+`0`, con cui il SO assegna una porta libera (usata dai test).
 
 ## Test
 
@@ -111,8 +146,8 @@ javaSchacchiServer/
 ├── .vscode/settings.json    (3 righe: nessun launch.json, nessun tasks.json)
 └── src/
     ├── main/java/org/schacchi/
-    │   ├── Main.java              158   entry point server: dashboard Swing o console headless
-    │   ├── ClientMain.java        308   entry point client: JFrame + CardLayout
+    │   ├── Main.java              515   entry point server: solo terminale, log + console
+    │   ├── ClientMain.java        327   entry point client: JFrame su sfondo animato
     │   ├── model/                       Il dominio e il motore di regole
     │   │   ├── ChessBoard.java     936   generazione mosse, legalità, scacco/matto/stallo,
     │   │   │                             castello, en passant, promozione, FEN, patte
@@ -125,15 +160,17 @@ javaSchacchiServer/
     │   │   ├── GameSession.java     425   una partita: giocatori, spettatori, pipeline mosse
     │   │   ├── ConnectionHandler.java 529 per connessione; lo switch a 24 casi, 28 comandi
     │   │   ├── AccountManager.java  535   auth PBKDF2, amici, ELO, cancellazione GDPR
-    │   │   ├── Server.java          404   acceptor TCP singleton, pool limitato, tetto connessioni
+    │   │   ├── Server.java          413   acceptor TCP singleton, pool limitato, tetto connessioni
     │   │   ├── SessionManager.java  112   registro stanze + coda di matchmaking
     │   │   └── ServerListener.java   17   9 callback di default no-op
     │   └── client/                     La GUI Swing
-    │       ├── ChessBoardPanel.java  341   scacchiera interattiva disegnata a mano
-    │       ├── GameViewPanel.java    365   schermata di gioco
+    │       ├── Glass.java           661   design system: palette, tipografia, vetro, widget
+    │       ├── Dialogs.java          249   popup modali in stile vetro (niente JOptionPane)
+    │       ├── ChessBoardPanel.java  424   scacchiera interattiva disegnata a mano
+    │       ├── GameViewPanel.java    370   schermata di gioco
     │       ├── ClientNetwork.java    392   socket, thread lettore, builder di comandi
-    │       ├── LobbyPanel.java       404   lobby: stanze, amici, profilo e tab "I Miei Dati"
-    │       ├── LoginPanel.java       332   connessione, tab Login/Register/Guest, informativa
+    │       ├── LobbyPanel.java       520   lobby: stanze, amici, profilo e tab "I miei dati"
+    │       ├── LoginPanel.java       400   connessione, tab Accedi/Account/Ospite, informativa
     │       ├── ClientListener.java    52   callback, incluso onDataExported/onAccountDeleted
     │       ├── RoomInfo.java          30   DTO immutabile
     │       ├── FriendInfo.java        24   DTO immutabile
@@ -141,7 +178,20 @@ javaSchacchiServer/
     └── test/java/org/schacchi/         4 classi, 1 888 righe, 80 test
 ```
 
-**Totale: 5 642 righe di main, 1 888 di test.**
+**Totale: 7 217 righe di main, 1 888 di test.**
+
+### Lo stile del client
+
+L'interfaccia è disegnata a mano in stile *liquid glass*: niente LookAndFeel di
+sistema, che reintroduce sempre bordi e sfondi opachi. `Glass.java` tiene insieme
+palette, tipografia e widget — pannelli di vetro, bottoni a pillola, campi con
+riflesso in focus, tab disegnate a mano — e `Glass.Backdrop` disegna uno sfondo
+aurora animato dietro tutto, così le superfici translucide hanno qualcosa da
+mostrare. `Dialogs.java` sostituisce `JOptionPane`, che altrimenti mostrerebbe
+pulsanti grigi e icone a colori in mezzo a una finestra dipinta a mano.
+
+Tutto è `paintComponent` a mano: è l'unico modo con Swing di avere angoli
+arrotondati, bordi di luce e animazioni di hover.
 
 ## Protocollo
 
@@ -265,8 +315,8 @@ non un fork: nessun codice, package, protocollo o documentazione condiviso.
   età, statistiche e liste amici. Le password sono protette dalla KDF, gli altri dati no.
 - 🟠 **L'età è dichiarata, non verificata.** Un minore può dichiarare un'età falsa.
 - 🔴 **La disconnessione è forfeit immediato e permanente**, senza periodo di
-  grazia, e **muove l'ELO**. Il pulsante "Arresta Server" della dashboard chiude
-  ogni socket: ogni partita in corso finisce come forfeit e ogni punteggio cambia.
+  grazia, e **muove l'ELO**. Il comando `stop` (o `Ctrl+C`) chiude ogni socket:
+  ogni partita in corso finisce come forfeit e ogni punteggio cambia.
 - **La ripetizione a tre mosse è trattata come patta automatica**, non come
   dichiarazione. Il regolamento FIDE la tratta come *claim*. Il quintplice, che è
   automatico, ora è implementato; resta la sovradichiarazione sulla tripla.
@@ -288,3 +338,49 @@ Dettaglio completo in [`docs.md`](./docs.md).
 |---|---|
 | [`docs.md`](./docs.md) | Architettura, modello di dominio, il motore di regole, protocollo, concorrenza, test con perft, limiti con riferimenti di codice |
 | [`docs/privacy.md`](./docs/privacy.md) | Informativa privacy GDPR (template), registro trattamenti, misure di sicurezza, non conformità note |
+
+## Further reading
+
+External material covering the same ground. The cross-repo map, with the same
+links for all seven projects, is in `~/Progetti/RESOURCES.md`.
+
+### Build it from scratch
+
+- [Beej's Guide to Network Programming](http://beej.us/guide/bgnet/) — why one
+  socket read is not one message, and therefore why the protocol is
+  newline-delimited plain text.
+- [Code a 2D Game Engine using Java — Full Course for Beginners](https://www.youtube.com/watch?v=025QFeZfeyM)
+  *(video)* — the closest analogue to the rules engine.
+- [Chess Engine In C](https://www.youtube.com/playlist?list=PLZ1QII7yudbc-Ky058TEaOstZHVbT-2hg)
+  *(video)* — move generation and perft.
+
+### System design
+
+[System Design Primer](https://github.com/donnemartin/system-design-primer)
+applies to this project only in part: the room registry and the matchmaking
+queue are real shared state inside a single process, but there is no
+database and no reverse proxy. The sections that match the known issues above:
+
+| Known issue | Primer section |
+|---|---|
+| No rate limiting beyond a connection cap | [Availability patterns](https://github.com/donnemartin/system-design-primer#availability-patterns) |
+| No reconnection; a TCP drop is a permanent forfeit | [Communication](https://github.com/donnemartin/system-design-primer#communication) (TCP), [Failure modes](https://github.com/donnemartin/system-design-primer#availability-patterns) |
+| Rooms and ELO live in memory and in a text file | [Database](https://github.com/donnemartin/system-design-primer#database) |
+
+### Books
+
+- [Google's Java Style Guide](https://google.github.io/styleguide/javaguide.html)
+- [Introduction to Programming Using Java](https://math.hws.edu/javanotes) — David J. Eck, with exercises
+- [A Practical Introduction to Data Structures and Algorithm Analysis, Java version](https://people.cs.vt.edu/shaffer/Book/Java3e20100119.pdf) — Clifford A. Shaffer
+
+### Reference
+
+- [roadmap.sh/java](https://roadmap.sh/java) · [network-engineer](https://roadmap.sh/network-engineer) · [computer-science](https://roadmap.sh/computer-science)
+- [Awesome Java](https://github.com/akullpp/awesome-java) ·
+  [Awesome Chess](https://github.com/hkirat/awesome-chess) ·
+  [Static Analysis](https://github.com/analysis-tools-dev/static-analysis) —
+  relevant to the absence of any CI or linter in this repository
+- [Project-based learning, Java section](https://github.com/practical-tutorials/project-based-learning#java):
+  [Build a Simple HTTP Server with Java](http://javarevisited.blogspot.com/2015/06/how-to-create-http-server-in-java-serversocket-example.html) ·
+  [concurrent servers](https://eli.thegreenplace.net/2017/concurrent-servers-part-1-introduction/)
+- [Awesome GDPR](https://github.com/bakke92/awesome-gdpr) — for `docs/privacy.md`

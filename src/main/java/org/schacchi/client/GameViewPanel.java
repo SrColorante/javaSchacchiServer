@@ -7,11 +7,13 @@ import org.schacchi.model.PieceColor;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.util.function.Consumer;
+import java.util.List;
 
 /**
- * Schermata di gioco attiva contenente la scacchiera, i pannelli giocatori,
- * lo storico delle mosse, la chat in tempo reale e i controlli partita (resa, patta, abbandona).
+ * Schermata di partita: scacchiera, barre dei giocatori, storico mosse e chat.
+ *
+ * <p>Chat e storico stanno in tab per non rubare spazio alla scacchiera, che e' il
+ * motivo per cui l'utente ha aperto questa finestra.
  */
 public class GameViewPanel extends JPanel {
     private final ClientNetwork network;
@@ -21,9 +23,11 @@ public class GameViewPanel extends JPanel {
     private JLabel lblOpponentName;
     private JLabel lblPlayerName;
     private JLabel lblTurnIndicator;
-    private JTextArea moveHistoryArea;
-    private JTextArea chatArea;
-    private JTextField chatInputField;
+    private JComponent chipOpponent;
+    private JComponent chipPlayer;
+    private Glass.Area moveHistoryArea;
+    private Glass.Area chatArea;
+    private Glass.Field chatInputField;
 
     private String currentRoomId = "";
     private PieceColor myColor = PieceColor.WHITE;
@@ -35,169 +39,166 @@ public class GameViewPanel extends JPanel {
         this.onLeaveCallback = onLeaveCallback;
         this.boardPanel = new ChessBoardPanel();
 
-        setLayout(new BorderLayout(10, 10));
-        setBorder(new EmptyBorder(10, 10, 10, 10));
-        setBackground(new Color(24, 25, 28));
+        setOpaque(false);
+        setLayout(new BorderLayout(Glass.GAP, Glass.GAP));
+        setBorder(new EmptyBorder(Glass.GAP, Glass.GAP, Glass.GAP, Glass.GAP));
 
-        // Listener per le mosse generate sulla scacchiera
-        boardPanel.setMoveListener(move -> {
-            network.sendMove(move.toUci());
-        });
+        boardPanel.setMoveListener(move -> network.sendMove(move.toUci()));
 
-        // Pannello sinistro / centrale: Giocatori + Scacchiera
-        JPanel gameCenterPanel = new JPanel(new BorderLayout(5, 5));
-        gameCenterPanel.setOpaque(false);
-
-        // Barra avversario (in alto)
-        JPanel opponentPanel = createPlayerBar(false);
-        gameCenterPanel.add(opponentPanel, BorderLayout.NORTH);
-
-        // Scacchiera al centro (centrata)
-        JPanel boardContainer = new JPanel(new GridBagLayout());
-        boardContainer.setOpaque(false);
-        boardContainer.add(boardPanel);
-        gameCenterPanel.add(boardContainer, BorderLayout.CENTER);
-
-        // Barra giocatore locale (in basso)
-        JPanel playerPanel = createPlayerBar(true);
-        gameCenterPanel.add(playerPanel, BorderLayout.SOUTH);
-
-        add(gameCenterPanel, BorderLayout.CENTER);
-
-        // Sidebar destra: Storico mosse + Chat + Azioni
-        JPanel sidebar = createSidebar();
-        add(sidebar, BorderLayout.EAST);
+        add(createBoardColumn(), BorderLayout.CENTER);
+        add(createSidebar(), BorderLayout.EAST);
     }
 
-    private JPanel createPlayerBar(boolean isLocalPlayer) {
-        JPanel bar = new JPanel(new BorderLayout());
-        bar.setBackground(new Color(36, 38, 43));
-        bar.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(50, 52, 60), 1),
-                new EmptyBorder(8, 12, 8, 12)
-        ));
+    // ---------- Colonna centrale ----------
 
-        JLabel nameLabel = new JLabel(isLocalPlayer ? "Tu" : "In attesa dell'avversario...");
-        nameLabel.setForeground(Color.WHITE);
-        nameLabel.setFont(new Font("SansSerif", Font.BOLD, 14));
+    private JComponent createBoardColumn() {
+        JPanel column = Glass.row(new BorderLayout(0, 10), 10);
 
-        JLabel statusLabel = new JLabel(isLocalPlayer ? "(Bianco)" : "");
-        statusLabel.setForeground(new Color(170, 175, 190));
-        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        JPanel opponentBar = createPlayerBar(false);
+        column.add(opponentBar, BorderLayout.NORTH);
+
+        // Il riquadro di vetro lo disegna ChessBoardPanel stesso, stringendosi
+        // attorno al quadrato: un pannello separato che occupa tutto lo spazio
+        // lascerebbe una cornice enorme ai lati della scacchiera.
+        column.add(boardPanel, BorderLayout.CENTER);
+
+        column.add(createPlayerBar(true), BorderLayout.SOUTH);
+        return column;
+    }
+
+    private Glass.Panel createPlayerBar(boolean isLocalPlayer) {
+        Glass.Panel bar = new Glass.Panel(new BorderLayout(12, 0), Glass.RADIUS_SM, Glass.SURFACE, true);
+        bar.setBorder(new EmptyBorder(10, 14, 10, 14));
+        bar.setPreferredSize(new Dimension(10, 48));
+        bar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 48));
+
+        JLabel nameLabel = Glass.label(isLocalPlayer ? "Tu" : "In attesa dell'avversario...", 14, Font.BOLD, Glass.TEXT);
+        JLabel statusLabel = Glass.label("", 12, Font.PLAIN, Glass.TEXT_DIM);
+
+        // Pastiglia del colore: dice subito chi muove senza dover leggere il nome.
+        JPanel chip = new Glass.Panel(new GridBagLayout(), 8, Glass.alpha(Color.WHITE, 40), false);
+        chip.setPreferredSize(new Dimension(14, 14));
+        chip.setMinimumSize(new Dimension(14, 14));
 
         if (isLocalPlayer) {
             this.lblPlayerName = nameLabel;
             this.lblTurnIndicator = statusLabel;
+            this.chipPlayer = chip;
         } else {
             this.lblOpponentName = nameLabel;
+            this.chipOpponent = chip;
         }
 
-        bar.add(nameLabel, BorderLayout.WEST);
+        JPanel chipBox = Glass.row(new BorderLayout(8, 0), 8);
+        chipBox.setOpaque(false);
+        chipBox.add(chip, BorderLayout.WEST);
+        chipBox.add(nameLabel, BorderLayout.CENTER);
+
+        bar.add(chipBox, BorderLayout.CENTER);
         bar.add(statusLabel, BorderLayout.EAST);
         return bar;
     }
 
-    private JPanel createSidebar() {
-        JPanel sidebar = new JPanel(new BorderLayout(8, 8));
-        sidebar.setPreferredSize(new Dimension(300, 550));
-        sidebar.setOpaque(false);
+    /** Riempie la pastiglia col colore del pezzo: bianco pieno o scuro con bordo chiaro. */
+    private static void tintChip(JComponent chip, boolean white) {
+        if (chip instanceof Glass.Panel panel) {
+            panel.setSurface(white ? Glass.alpha(Color.WHITE, 235) : Glass.alpha(Glass.BG_DEEP, 220));
+            panel.setOutlined(!white);
+        }
+    }
 
-        // Storico mosse in alto
-        JPanel historyPanel = new JPanel(new BorderLayout());
-        historyPanel.setOpaque(false);
-        historyPanel.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(70, 75, 85)),
-                "Storico Mosse", 0, 0, new Font("SansSerif", Font.BOLD, 12), Color.LIGHT_GRAY
-        ));
+    // ---------- Sidebar ----------
 
-        moveHistoryArea = new JTextArea();
-        moveHistoryArea.setEditable(false);
-        moveHistoryArea.setFont(new Font("Monospaced", Font.PLAIN, 13));
-        moveHistoryArea.setBackground(new Color(32, 34, 38));
-        moveHistoryArea.setForeground(new Color(225, 225, 230));
-        JScrollPane historyScroll = new JScrollPane(moveHistoryArea);
-        historyScroll.setPreferredSize(new Dimension(280, 160));
-        historyPanel.add(historyScroll, BorderLayout.CENTER);
+    private JComponent createSidebar() {
+        Glass.Panel sidebar = new Glass.Panel(new BorderLayout(0, 12), Glass.RADIUS, Glass.SURFACE, true);
+        sidebar.setPreferredSize(new Dimension(320, 10));
 
-        // Chat al centro
-        JPanel chatPanel = new JPanel(new BorderLayout(4, 4));
-        chatPanel.setOpaque(false);
-        chatPanel.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(70, 75, 85)),
-                "Chat Partita", 0, 0, new Font("SansSerif", Font.BOLD, 12), Color.LIGHT_GRAY
-        ));
+        Glass.Tabs tabs = new Glass.Tabs();
+        tabs.addTab("Chat", createChatTab());
+        tabs.addTab("Mosse", createHistoryTab());
+        sidebar.add(tabs, BorderLayout.CENTER);
 
-        chatArea = new JTextArea();
-        chatArea.setEditable(false);
-        chatArea.setLineWrap(true);
-        chatArea.setFont(new Font("SansSerif", Font.PLAIN, 12));
-        chatArea.setBackground(new Color(32, 34, 38));
-        chatArea.setForeground(new Color(210, 215, 225));
-        JScrollPane chatScroll = new JScrollPane(chatArea);
-        chatPanel.add(chatScroll, BorderLayout.CENTER);
+        sidebar.add(createActionsBar(), BorderLayout.SOUTH);
+        return sidebar;
+    }
 
-        JPanel chatInputBox = new JPanel(new BorderLayout(4, 4));
-        chatInputBox.setOpaque(false);
-        chatInputField = new JTextField();
+    private JComponent createChatTab() {
+        JPanel panel = Glass.row(new BorderLayout(0, 10), 0);
+
+        chatArea = new Glass.Area();
+        chatArea.setFont(Glass.sans(13, Font.PLAIN));
+        panel.add(scroll(chatArea), BorderLayout.CENTER);
+
+        JPanel inputRow = Glass.row(new BorderLayout(8, 0), 8);
+        chatInputField = new Glass.Field("Scrivi un messaggio");
         chatInputField.addActionListener(e -> sendChat());
-        JButton btnSendChat = new JButton("Invia");
-        btnSendChat.addActionListener(e -> sendChat());
+        inputRow.add(chatInputField, BorderLayout.CENTER);
 
-        chatInputBox.add(chatInputField, BorderLayout.CENTER);
-        chatInputBox.add(btnSendChat, BorderLayout.EAST);
-        chatPanel.add(chatInputBox, BorderLayout.SOUTH);
+        Glass.Button send = new Glass.Button("Invia", Glass.Button.Kind.PRIMARY);
+        send.addActionListener(e -> sendChat());
+        inputRow.add(send, BorderLayout.EAST);
+        panel.add(inputRow, BorderLayout.SOUTH);
 
-        // Bottoni azione in basso
-        JPanel actionsPanel = new JPanel(new GridLayout(1, 3, 6, 6));
-        actionsPanel.setOpaque(false);
+        return panel;
+    }
 
-        JButton btnDraw = new JButton("Patta");
-        btnDraw.setToolTipText("Offri una patta all'avversario");
-        btnDraw.addActionListener(e -> {
-            int confirm = JOptionPane.showConfirmDialog(this, "Vuoi proporre la patta?", "Offerta Patta", JOptionPane.YES_NO_OPTION);
-            if (confirm == JOptionPane.YES_OPTION) {
+    private JComponent createHistoryTab() {
+        JPanel panel = Glass.row(new BorderLayout(), 0);
+        moveHistoryArea = new Glass.Area();
+        moveHistoryArea.setEditable(false);
+        moveHistoryArea.setFont(Glass.mono(13, Font.PLAIN));
+        moveHistoryArea.setLineWrap(false);
+        panel.add(scroll(moveHistoryArea), BorderLayout.CENTER);
+        return panel;
+    }
+
+    private JComponent createActionsBar() {
+        JPanel actions = Glass.row(new GridLayout(1, 3, 8, 0), 8);
+
+        Glass.Button draw = new Glass.Button("Patta", Glass.Button.Kind.GHOST);
+        draw.setToolTipText("Offri una patta all'avversario");
+        draw.addActionListener(e -> {
+            if (Dialogs.confirm(this, "Offerta patta", "Vuoi proporre la patta?")) {
                 network.offerDraw();
                 appendChat("Tu: [Hai offerto la patta]");
             }
         });
 
-        JButton btnResign = new JButton("Arrenditi");
-        btnResign.setForeground(new Color(230, 80, 80));
-        btnResign.addActionListener(e -> {
-            int confirm = JOptionPane.showConfirmDialog(this, "Sei sicuro di volerti arrendere?", "Resa Partita", JOptionPane.YES_NO_OPTION);
-            if (confirm == JOptionPane.YES_OPTION) {
+        Glass.Button resign = new Glass.Button("Arrenditi", Glass.Button.Kind.DANGER);
+        resign.addActionListener(e -> {
+            if (Dialogs.confirm(this, "Resa partita", "Sei sicuro di volerti arrendere?",
+                    Glass.Button.Kind.DANGER)) {
                 network.resign();
             }
         });
 
-        JButton btnLeave = new JButton("Esci");
-        btnLeave.setToolTipText("Abbandona la stanza");
-        btnLeave.addActionListener(e -> {
+        Glass.Button leave = new Glass.Button("Esci", Glass.Button.Kind.GHOST);
+        leave.setToolTipText("Abbandona la stanza");
+        leave.addActionListener(e -> {
             // Essere in partita, uscire equivale a un abbandono: va detto chiaramente,
             // altrimenti l'utente pensa di tornare semplicemente in lobby.
-            int confirm = JOptionPane.showConfirmDialog(this,
-                    "Abbandonando perdi la partita e l'avversario riceve la vittoria per forfeit.\nVuoi davvero uscire?",
-                    "Abbandona Partita", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
-            if (confirm == JOptionPane.YES_OPTION) {
+            if (Dialogs.confirm(this, "Abbandona partita",
+                    "Abbandonando perdi la partita e l'avversario riceve la vittoria per forfeit.\n"
+                            + "Vuoi davvero uscire?", Glass.Button.Kind.DANGER)) {
                 network.leaveRoom();
                 if (onLeaveCallback != null) onLeaveCallback.run();
             }
         });
 
-        actionsPanel.add(btnDraw);
-        actionsPanel.add(btnResign);
-        actionsPanel.add(btnLeave);
+        actions.add(draw);
+        actions.add(resign);
+        actions.add(leave);
+        return actions;
+    }
 
-        // Assegna parti alla sidebar
-        JPanel topSide = new JPanel(new BorderLayout(6, 6));
-        topSide.setOpaque(false);
-        topSide.add(historyPanel, BorderLayout.NORTH);
-        topSide.add(chatPanel, BorderLayout.CENTER);
-
-        sidebar.add(topSide, BorderLayout.CENTER);
-        sidebar.add(actionsPanel, BorderLayout.SOUTH);
-
-        return sidebar;
+    private static JScrollPane scroll(Component view) {
+        JScrollPane s = new JScrollPane(view);
+        s.setOpaque(false);
+        s.getViewport().setOpaque(false);
+        s.setBorder(new EmptyBorder(0, 0, 0, 0));
+        s.getVerticalScrollBar().setOpaque(false);
+        s.getHorizontalScrollBar().setOpaque(false);
+        return s;
     }
 
     private void sendChat() {
@@ -207,6 +208,8 @@ public class GameViewPanel extends JPanel {
             chatInputField.setText("");
         }
     }
+
+    // ---------- API pubblica (invariata) ----------
 
     public void startNewGame(String roomId, String colorStr, String opponent) {
         this.currentRoomId = roomId;
@@ -219,14 +222,14 @@ public class GameViewPanel extends JPanel {
         boardPanel.setPerspective(myColor);
         boardPanel.setInteractive(true);
 
-        lblPlayerName.setText(network.getCurrentUsername() + " (" + (myColor == PieceColor.WHITE ? "Bianco" : "Nero") + ")");
-        lblOpponentName.setText(opponent + " (" + (myColor == PieceColor.WHITE ? "Nero" : "Bianco") + ")");
-        lblTurnIndicator.setText(boardPanel.getBoard().getTurn() == myColor ? ">> IL TUO TURNO <<" : "Turno dell'avversario...");
-        lblTurnIndicator.setForeground(boardPanel.getBoard().getTurn() == myColor
-                ? new Color(100, 240, 120) : new Color(170, 175, 190));
+        lblPlayerName.setText(network.getCurrentUsername() + "  (" + (myColor == PieceColor.WHITE ? "Bianco" : "Nero") + ")");
+        lblOpponentName.setText(opponent + "  (" + (myColor == PieceColor.WHITE ? "Nero" : "Bianco") + ")");
+        tintChip(chipPlayer, myColor == PieceColor.WHITE);
+        tintChip(chipOpponent, myColor != PieceColor.WHITE);
+        updateTurnIndicator();
 
         moveHistoryArea.setText("");
-        chatArea.setText("--- Nuova Partita Iniziata in stanza " + roomId + " ---\n");
+        chatArea.setText("Partita iniziata nella stanza " + roomId + "\n");
     }
 
     /**
@@ -246,11 +249,13 @@ public class GameViewPanel extends JPanel {
 
         lblPlayerName.setText("Osservatore");
         lblOpponentName.setText("Stanza " + roomId);
+        tintChip(chipPlayer, true);
+        tintChip(chipOpponent, false);
         lblTurnIndicator.setText("Modalita' spettatore");
-        lblTurnIndicator.setForeground(Color.GRAY);
+        lblTurnIndicator.setForeground(Glass.TEXT_FAINT);
 
         moveHistoryArea.setText("");
-        chatArea.setText("--- Stai assistendo alla partita " + roomId + " ---\n");
+        chatArea.setText("Stai assistendo alla partita " + roomId + "\n");
 
         applyServerFen(fen);
     }
@@ -260,24 +265,19 @@ public class GameViewPanel extends JPanel {
      * a meta' partita: senza, la scacchiera mostrerebbe i pezzi gia' spostati senza
      * alcuna traccia di come ci si e' arrivati.
      */
-    public void onMoveHistoryReceived(java.util.List<String> moves) {
+    public void onMoveHistoryReceived(List<String> moves) {
         if (moves == null || moves.isEmpty()) return;
         StringBuilder sb = new StringBuilder();
         int moveNumber = 1;
         for (String uci : moves) {
-            if (moveNumber % 2 == 1) {
-                sb.append(moveNumber).append(". ");
-            }
-            sb.append(uci).append("  ");
-            if (moveNumber % 2 == 0) {
-                sb.append('\n');
-            }
+            if (moveNumber % 2 == 1) sb.append(moveNumber).append(".  ");
+            sb.append(uci).append("   ");
+            if (moveNumber % 2 == 0) sb.append('\n');
             moveNumber++;
         }
-        if (moveNumber % 2 == 1) {
-            sb.append('\n');
-        }
+        if (moveNumber % 2 == 1) sb.append('\n');
         moveHistoryArea.setText(sb.toString());
+        moveHistoryArea.setCaretPosition(0);
     }
 
     /**
@@ -323,26 +323,27 @@ public class GameViewPanel extends JPanel {
             }
         }
 
-        // Aggiorna indicatore turno
-        boolean isMyTurn = (boardPanel.getBoard().getTurn() == myColor) && !spectating;
-        lblTurnIndicator.setText(spectating
-                ? "Modalita' spettatore"
-                : (isMyTurn ? ">> IL TUO TURNO <<" : "Turno dell'avversario..."));
-        lblTurnIndicator.setForeground(spectating
-                ? Color.GRAY
-                : (isMyTurn ? new Color(100, 240, 120) : new Color(170, 175, 190)));
+        updateTurnIndicator();
 
         // Aggiungi a storico
-        moveHistoryArea.append(uciMove + "  ");
+        moveHistoryArea.append(uciMove + "   ");
         if (boardPanel.getBoard().getTurn() == PieceColor.WHITE) {
             moveHistoryArea.append("\n");
         }
     }
 
-    /**
-     * Applica una posizione FEN inviata dal server (comando BOARD/FEN) senza
-     * modificarne lo storico delle mosse.
-     */
+    private void updateTurnIndicator() {
+        if (spectating) {
+            lblTurnIndicator.setText("Modalita' spettatore");
+            lblTurnIndicator.setForeground(Glass.TEXT_FAINT);
+            return;
+        }
+        boolean isMyTurn = boardPanel.getBoard().getTurn() == myColor;
+        lblTurnIndicator.setText(isMyTurn ? "Il tuo turno" : "Turno dell'avversario");
+        lblTurnIndicator.setForeground(isMyTurn ? Glass.SUCCESS : Glass.TEXT_DIM);
+    }
+
+    /** Applica una posizione FEN inviata dal server (comando BOARD/FEN). */
     public void onBoardSynced(String fen, boolean isMine) {
         if (applyServerFen(fen)) {
             boardPanel.repaint();
@@ -356,10 +357,9 @@ public class GameViewPanel extends JPanel {
 
     public void onGameOver(String winner, String reason) {
         boardPanel.setInteractive(false);
-        lblTurnIndicator.setText("PARTITA TERMINATA: " + winner);
-        lblTurnIndicator.setForeground(Color.ORANGE);
+        lblTurnIndicator.setText("Partita conclusa: " + winner);
+        lblTurnIndicator.setForeground(Glass.WARNING);
 
-        String message = "Partita conclusa!\nEsito: " + winner + "\nMotivo: " + reason;
-        JOptionPane.showMessageDialog(this, message, "Fine Partita", JOptionPane.INFORMATION_MESSAGE);
+        Dialogs.info(this, "Fine partita", winner + "\n" + reason);
     }
 }

@@ -46,6 +46,9 @@ public class Server {
     private final Set<ConnectionHandler> connectedClients;
     private final List<ServerListener> listeners;
 
+    /** Eco dei log su stdout: disattivabile da chi si registra come listener. */
+    private volatile boolean echoLogToStdout = true;
+
     /**
      * Costruttore privato (Singleton).
      */
@@ -137,9 +140,16 @@ public class Server {
     }
 
     /**
-     * Installa un'istanza dedicata, bypassing il singleton.
-     * Riservato ai test, che hanno bisogno di un server su porta libera e di un
-     * file account temporaneo; in produzione l'istanza globale resta unica.
+     * Installa l'istanza globale, scartando quella precedente se esiste.
+     *
+     * <p>Usata dai test (porta libera, file account temporaneo) e dall'entry point
+     * {@code org.schacchi.Main}, che costruisce il server con porta e file account
+     * letti dagli argomenti invece che dall'ambiente.
+     *
+     * <p>Deve essere chiamata da {@code Main}: {@link ConnectionHandler} e
+     * {@link SessionManager} raggiungono il server con {@link #getInstance()}, quindi
+     * creare un server con il solo costruttore lascerebbe il networking con un
+     * {@link SessionManager} diverso da quello che ha fatto {@code start()}.
      */
     public static synchronized Server installInstance(Server newInstance) {
         instance = newInstance;
@@ -161,20 +171,15 @@ public class Server {
         this.port = serverSocket.getLocalPort();
         running = true;
 
-        // stop() chiude il pool dei client: se il server viene riavviato (pulsante
-        // "Riavvia Server" della dashboard) ne serve uno nuovo, altrimenti ogni
-        // submit() successivo verrebbe rifiutato.
+        // stop() chiude il pool dei client: se il server viene riavviato (per esempio
+        // dal comando "stop" seguito da un nuovo start) ne serve uno nuovo, altrimenti
+        // ogni submit() successivo verrebbe rifiutato.
         if (clientPool == null || clientPool.isShutdown() || clientPool.isTerminated()) {
             // Pool BOSSERVATO e limitato, non cached: ogni connessione occupa un
             // thread per tutta la sua durata, quindi un cached pool (illimitato)
             // permette a un flood di aprire thread senza tetto e di esaurire la memoria.
         }
-        log("==================================================");
-        log(" Server Scacchi avviato sulla porta " + port);
-        log(" Connessioni massime contemporanee: " + maxClients);
-        log(" Host configurato per: game.cristianrenosto.party");
-        log(" In attesa di connessioni client...");
-        log("==================================================");
+        log("In ascolto sulla porta " + port + " (max " + maxClients + " connessioni simultanee)");
 
         for (ServerListener listener : listeners) {
             listener.onServerStarted(port);
@@ -381,25 +386,23 @@ public class Server {
     }
 
     public void log(String message) {
-        System.out.println("[ChessServer] " + message);
+        if (echoLogToStdout) {
+            System.out.println("[ChessServer] " + message);
+        }
         for (ServerListener l : listeners) {
             l.onLog(message);
         }
     }
 
-    public static void main(String[] args) {
-        int port = DEFAULT_PORT;
-        if (args.length > 0) {
-            try {
-                port = Integer.parseInt(args[0]);
-            } catch (NumberFormatException ignored) {}
-        }
-
-        Server server = Server.getInstance(port);
-        try {
-            server.start();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    /**
+     * Disattiva il rispecchiamento dei log su stdout.
+     *
+     * <p>Quando qualcuno si registra come {@link ServerListener} per formattare i log
+     * (è il caso dell'entry point {@code org.schacchi.Main}, che li stampa colorati e
+     * datati) l'eco su System.out produrrebbe ogni messaggio due volte: una grezza e
+     * una formattata.
+     */
+    public void setEchoLogToStdout(boolean enabled) {
+        this.echoLogToStdout = enabled;
     }
 }

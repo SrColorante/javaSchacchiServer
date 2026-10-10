@@ -115,7 +115,7 @@ mvn -Dtest=ChessBoardTest test
 mvn -Dtest=ChessServerIntegrationTest test
 ```
 
-**80 test** su 4 classi:
+**83 test** su 5 classi:
 
 | Classe | Righe | Test | Copre |
 |---|---:|---:|---|
@@ -123,6 +123,7 @@ mvn -Dtest=ChessServerIntegrationTest test
 | `ChessServerIntegrationTest` | 916 | 25 | End-to-end su socket reali, diritti GDPR, limiti di connessione |
 | `GameSessionDrawTest` | 281 | 8 | Logica di patta a livello di sessione |
 | `ChessServerTest` | 161 | 7 | Smoke test piatti (pre-JUnit, ha ancora un `main`) |
+| `ClientProtocolTest` | — | 3 | Il client vero contro il server vero: aggiornamenti dello spettatore, caduta dell'avversario, messaggi sconosciuti |
 
 La cosa più notevole: **`ChessBoardTest` contiene una suite perft** verificata
 contro i valori pubblicati.
@@ -175,10 +176,10 @@ javaSchacchiServer/
     │       ├── RoomInfo.java          30   DTO immutabile
     │       ├── FriendInfo.java        24   DTO immutabile
     │       └── ClientMain.java        10   shim verso org.schacchi.ClientMain
-    └── test/java/org/schacchi/         4 classi, 1 888 righe, 80 test
+    └── test/java/org/schacchi/         5 classi, 2 118 righe, 83 test
 ```
 
-**Totale: 7 217 righe di main, 1 888 di test.**
+**Totale: 7 241 righe di main, 2 118 di test.**
 
 ### Lo stile del client
 
@@ -297,6 +298,7 @@ non un fork: nessun codice, package, protocollo o documentazione condiviso.
   `MAX_CLIENTS` (default 200); le connessioni oltre vengono rifiutate con un motivo
 - ~~nessun timeout di lettura~~ → `SOCKET_TIMEOUT_MS` (default disabilitato)
 - ~~gli spettatori non vedono la cronologia~~ → `MOVE_HISTORY` all'ingresso
+- ~~la scacchiera dello spettatore non si aggiornava~~ → `MOVE` viene interpretato
 - ~~`HELP` incompleto~~ → elenca tutti i 28 comandi, ed è interrogabile con `HELP`
 - ~~il client ignora `HELP`, `PONG` e `SERVER_SHUTDOWN`~~ → tutti gestiti
 - ~~quintuple ripetizione e 75 mosse non implementate~~ → ora automatiche

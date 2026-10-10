@@ -166,6 +166,16 @@ public class ClientNetwork {
                 String fen = mParts.length > 1 ? mParts[1] : "";
                 for (ClientListener l : listeners) l.onMoveExecuted(uci, fen, false);
             }
+            case "MOVE" -> {
+                // La stessa notifica, ma per chi guarda e non gioca: gli spettatori
+                // non sono il giocatore di turno, quindi non ricevono MOVE_OK ne'
+                // OPPONENT_MOVE. Senza questo ramo la scacchiera di uno spettatore
+                // resta congelata sul FEN che aveva quando e' entrato in stanza.
+                String[] mParts = arg.split("\\s+", 2);
+                String uci = mParts[0];
+                String fen = mParts.length > 1 ? mParts[1] : "";
+                for (ClientListener l : listeners) l.onMoveExecuted(uci, fen, false);
+            }
             case "FEN" -> {
                 // Posizione autorevole richiesta esplicitamente (comando BOARD/FEN)
                 for (ClientListener l : listeners) l.onBoardSynced(arg.trim(), false);
@@ -195,6 +205,11 @@ public class ClientNetwork {
                 String winner = goParts[0];
                 String reason = goParts.length > 1 ? goParts[1] : "";
                 for (ClientListener l : listeners) l.onGameOver(winner, reason);
+            }
+            case "OPPONENT_DISCONNECTED" -> {
+                // Il socket dell'avversario e' caduto. GAME_OVER arriva subito dopo
+                // con l'esito, ma questo dice prima CHI e come, senza aspettare.
+                for (ClientListener l : listeners) l.onOpponentDisconnected();
             }
             case "ROOM_LIST" -> {
                 pendingRooms.clear();

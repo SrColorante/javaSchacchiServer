@@ -202,6 +202,12 @@ public class ClientMain extends JFrame implements ClientListener {
     }
 
     @Override
+    public void onOpponentDisconnected() {
+        SwingUtilities.invokeLater(() ->
+                gameViewPanel.appendChat("[SERVER]: L'avversario si e' disconnesso."));
+    }
+
+    @Override
     public void onSpectating(String roomId, String fen) {
         SwingUtilities.invokeLater(() -> {
             gameViewPanel.startSpectating(roomId, fen);

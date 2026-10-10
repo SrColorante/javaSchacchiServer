@@ -184,11 +184,18 @@ perché alcuni casi condividono lo stesso handler (`PLAY`/`QUICKMATCH`/`MATCH`,
 `LIST` · `MOVE` · `RESIGN` · `DRAW_OFFER` · `DRAW_ACCEPT` · `DRAW_DECLINE` ·
 `CHAT` · `BOARD`/`FEN` · `LEAVE` · `HELP` · `PING` · `QUIT`/`EXIT`
 
-**36 messaggi** dal server. `ClientNetwork.handleServerLine` ne tratta 33 casi; i tre
-restanti sono `FRIEND_ADDED` (trattato, ma in un blocco con `FRIENDS`), `STATS` e
-`SERVER_SHUTDOWN`, che arrivano come `INFO`/`ERROR` o non hanno bisogno di azione nel
-client. `HELP` viene scritto su console senza popup: arriva due volte (all'avvio e su
-richiesta esplicita) e un dialog all'avvio coprirebbe la schermata di login.
+**36 messaggi** dal server. `ClientNetwork.handleServerLine` ne interpreta 36; l'unico
+che resta senza un caso è `STATS`, per il quale il client non ha nemmeno un comando
+per chiederlo (`ClientNetwork` non espone `stats()`). `HELP` viene scritto su console
+senza popup: arriva due volte (all'avvio e su richiesta esplicita) e un dialog
+all'avvio coprirebbe la schermata di login.
+
+`MOVE <uci> <fen>` e `OPPONENT_DISCONNECTED` erano i due messaggi che il client
+scartava in silenzio. Il primo è quello che tiene in vita la modalità spettatore:
+il server lo manda a chi guarda e non gioca, quindi non riceve né `MOVE_OK` né
+`OPPONENT_MOVE`, e senza quel ramo la sua scacchiera restava congelata sul FEN
+che aveva al momento dell'ingresso. Il secondo avvisa chi resta quando la socket
+dell'avversario cade. `ClientProtocolTest` copre i due casi col client vero.
 
 ### Il FEN è l'unica rappresentazione autorevole sul filo
 
@@ -285,7 +292,7 @@ traccia.
 
 ## 8. Test
 
-`mvn test` — 80 test su 4 classi, nessuno richiede un display.
+`mvn test` — 83 test su 5 classi, nessuno richiede un display.
 
 | Classe | Test | Che cosa dimostra |
 |---|---:|---|
@@ -293,6 +300,7 @@ traccia.
 | `ChessServerIntegrationTest` | 25 | Due o tre client reali su socket: partita fino a scacco matto, mosse rifiutate, resa, forfeit, patta, stallo, matchmaking, spettatore, chat, login, diritti GDPR (accesso, cancellazione, età), tetto di connessioni, `HELP` |
 | `GameSessionDrawTest` | 8 | Le cinque patte automatiche e la precedenza del matto sullo stallo |
 | `ChessServerTest` | 7 | Smoke test originali, pre-JUnit (ha ancora un `main`) |
+| `ClientProtocolTest` | 3 | Il client vero (`ClientNetwork` + `ClientListener`) contro il server vero: lo spettatore riceve le mosse, la caduta dell'avversario viene segnalata, un messaggio non riconosciuto non uccide il thread di lettura |
 
 ### Come sono costruiti i test di integrazione
 
@@ -305,6 +313,11 @@ traccia.
   messaggi in una `CopyOnWriteArrayList`; `await("PREFISSO")` attende con scadenza.
   Senza il timeout di lettura sul socket, un `SocketTimeoutException` ucciderebbe il
   thread lettore e il client perderebbe i messaggi successivi.
+
+`ClientProtocolTest` è l'eccezione: usa `ClientNetwork` e un `ClientListener` invece di
+socket grezze, perché il buco che chiude stava esattamente lì. I test con le socket
+grezze passavano anche mentre il client Swing perdeva gli aggiornamenti dello
+spettatore: il server funzionava, e nessuno guardava dall'altra parte del filo.
 
 ### `GameSessionDrawTest` e le posizioni non raggiungibili
 

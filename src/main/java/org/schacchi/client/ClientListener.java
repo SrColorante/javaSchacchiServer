@@ -29,6 +29,9 @@ public interface ClientListener {
     default void onCheck(String colorInCheck) {}
     default void onGameOver(String winner, String reason) {}
 
+    /** Il socket dell'avversario e' caduto a partita in corso. */
+    default void onOpponentDisconnected() {}
+
     /** La stanza era piena: questo client si mette in modalita' spettatore. */
     default void onSpectating(String roomId, String fen) {}
     /** Il server ha inviato una posizione FEN autorevole da cui risincronizzare la scacchiera. */
